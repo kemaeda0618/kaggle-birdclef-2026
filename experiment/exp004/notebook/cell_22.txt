@@ -1,0 +1,28 @@
+CODE CELL 22 (notebook index 23)
+================================================================================
+
+# Cell 19 — Diagnostics
+if MODE == "train":
+    print("=== ProtoSSM Training Summary ===")
+    print(f"Parameters: {model.count_parameters():,}")
+    print(f"Training time: {train_time:.1f}s")
+    print(f"Final train loss: {train_history['train_loss'][-1]:.4f}")
+    print(f"Best val loss: {min(train_history['val_loss']):.4f}")
+    print(f"Best val AUC: {max(train_history['val_auc']):.4f}")
+    
+    # Fusion alpha analysis
+    with torch.no_grad():
+        alphas = torch.sigmoid(model.fusion_alpha).numpy()
+        high_proto = (alphas > 0.5).sum()
+        high_perch = (alphas <= 0.5).sum()
+        print(f"\nFusion alpha distribution:")
+        print(f"  ProtoSSM-dominant (alpha>0.5): {high_proto} classes")
+        print(f"  Perch-dominant (alpha<=0.5): {high_perch} classes")
+    
+    print(f"\nMLP probes: {len(probe_models)} classes")
+    
+    print("\nSubmission probability stats:")
+    print(submission.iloc[:, 1:].stack().describe())
+else:
+    print("Submit mode completed.")
+    print(f"ProtoSSM parameters: {model.count_parameters():,}")

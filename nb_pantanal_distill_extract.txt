@@ -1,0 +1,330 @@
+=== Cell 0 (markdown) ===
+## Setup
+Install dependencies and configure environment.
+
+=== Cell 1 (code) ===
+# Cell 0 — Install TF 2.20 (required for Perch v2 StableHLO compatibility)
+!pip install -q --no-deps /kaggle/input/notebooks/ashok205/tf-wheels/tf_wheels/tensorboard-2.20.0-py3-none-any.whl
+!pip install -q --no-deps /kaggle/input/notebooks/ashok205/tf-wheels/tf_wheels/tensorflow-2.20.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+
+=== Cell 2 (markdown) ===
+## Configuration
+Mode switch and hyperparameters.
+
+=== Cell 3 (code) ===
+# Cell 1 — Mode switch
+MODE = "submit" 
+
+assert MODE in {"train", "submit"}
+
+print("MODE =", MODE)
+
+=== Cell 4 (markdown) ===
+# BirdCLEF+ 2026 -- ProtoSSM v5: Maximum Ensemble
+
+## V17 -- 11 Targeted Improvements over V16 (0.924)
+
+### Additions over V16:
+1. **Larger model**: d_model 192→256, 3 SSM layers (more capacity)
+2. **Rank-aware post-processing**: Scale by file max prediction (2025 Rank 3)
+3. **Delta shift smoothing**: Temporal smoothing across windows (2025 Rank 1)
+4. **Per-class thresholds**: OOF-optimized decision thresholds per species
+5. All V16 improvements: Mixup, Focal loss, Cross-attention, SWA, TTA, per-taxon temp, file-level scaling
+
+Pipeline: `Perch -> ProtoSSM_v5(pass1) + MLP -> ensemble -> ResidualSSM(pass2) -> TTA -> per-taxon temp -> file-level scale -> rank-aware -> delta smooth -> per-class threshold -> final`
+
+=== Cell 6 (code) ===
+# ── V18 CFG UPGRADES ──────────────────────
+CFG["proto_ssm"] = {
+    "d_model": 320, "d_state": 32, "n_ssm_layers": 4,
+    "dropout": 0.12, "n_prototypes": 2, "n_sites": 20,
+    "meta_dim": 24, "use_cross_attn": True, "cross_attn_heads": 8,
+}
+CFG["proto_ssm_train"] = {
+    "n_epochs": 80, "lr": 8e-4, "weight_decay": 1e-3,
+    "val_ratio": 0.15, "patience": 20, "pos_weight_cap": 25.0,
+    "distill_weight": 0.15, "proto_margin": 0.15,
+    "label_smoothing": 0.03, "oof_n_splits": 5,
+    "mixup_alpha": 0.4, "focal_gamma": 2.5,
+    "swa_start_frac": 0.65, "swa_lr": 4e-4,
+    "use_cosine_restart": True, "restart_period": 20,
+}
+CFG["residual_ssm"] = {
+    "d_model": 128, "d_state": 16, "n_ssm_layers": 2,
+    "dropout": 0.1, "correction_weight": 0.35,
+    "n_epochs": 40, "lr": 8e-4, "patience": 12,
+}
+CFG["best_fusion"]["lambda_event"]         = 0.45
+CFG["best_fusion"]["lambda_texture"]       = 1.1
+CFG["best_fusion"]["lambda_proxy_texture"] = 0.9
+CFG["threshold_grid"] = [0.25,0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70]
+CFG["tta_shifts"]        = [0, 1, -1, 2, -2]
+CFG["rank_aware_power"]  = 0.4
+CFG["delta_shift_alpha"] = 0.20
+CFG["mlp_params"] = {
+    "hidden_layer_sizes": (256, 128), "activation": "relu",
+    "max_iter": 500, "early_stopping": True,
+    "validation_fraction": 0.15, "n_iter_no_change": 20,
+    "random_state": 42, "learning_rate_init": 5e-4, "alpha": 0.005,
+}
+CFG["frozen_best_probe"] = {
+    "pca_dim": 128, "min_pos": 5, "C": 0.75, "alpha": 0.45
+}
+print("✅ V18 CFG loaded")
+
+=== Cell 7 (code) ===
+
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
+def get_cosine_restart_scheduler(optimizer, restart_period=20):
+    return CosineAnnealingWarmRestarts(
+        optimizer, T_0=restart_period, T_mult=1, eta_min=1e-5
+    )
+
+print("✅ Cosine Restart Scheduler defined")
+
+=== Cell 8 (code) ===
+# ── STEP 3: Mixup + CutMix Hybrid ─
+def mixup_cutmix(emb, logits, labels, alpha=0.4, cutmix_prob=0.3):
+    B, T, D = emb.shape
+    lam = np.random.beta(alpha, alpha)
+    idx = torch.randperm(B)
+
+    if np.random.rand() < cutmix_prob:
+        # CutMix on time dimension
+        cut_len = max(1, int(T * (1 - lam)))
+        cut_start = np.random.randint(0, T - cut_len + 1)
+        new_emb = emb.clone()
+        new_emb[:, cut_start:cut_start+cut_len, :] = emb[idx, cut_start:cut_start+cut_len, :]
+        new_logits = logits.clone()
+        new_logits[:, cut_start:cut_start+cut_len, :] = logits[idx, cut_start:cut_start+cut_len, :]
+        lam_actual = 1.0 - cut_len / T
+        new_labels = lam_actual * labels + (1-lam_actual) * labels[idx]
+    else:
+        # Standard Mixup
+        new_emb    = lam * emb    + (1-lam) * emb[idx]
+        new_logits = lam * logits + (1-lam) * logits[idx]
+        new_labels = lam * labels + (1-lam) * labels[idx]
+
+    return new_emb, new_logits, new_labels
+
+print("✅ Mixup+CutMix defined")
+
+=== Cell 9 (code) ===
+# ── STEP 4: Species-Frequency Aware Focal Loss ──
+def build_class_freq_weights(Y_FULL, cap=10.0):
+    pos_count = Y_FULL.sum(axis=0).astype(np.float32) + 1.0
+    total     = Y_FULL.shape[0]
+    freq      = pos_count / total
+    weights   = 1.0 / (freq ** 0.5)
+    weights   = np.clip(weights, 1.0, cap)
+    weights   = weights / weights.mean()
+    return torch.tensor(weights, dtype=torch.float32)
+
+def species_focal_loss(logits, targets, class_weights, 
+                       gamma=2.5, label_smoothing=0.03):
+    targets_smooth = targets * (1 - label_smoothing) + label_smoothing / 2.0
+    bce    = F.binary_cross_entropy_with_logits(
+                 logits, targets_smooth, reduction="none")
+    pt     = torch.exp(-bce)
+    focal  = ((1 - pt) ** gamma) * bce
+    w      = class_weights.to(logits.device).unsqueeze(0)
+    return (focal * w).mean()
+
+print("✅ Species Focal Loss defined")
+
+=== Cell 10 (markdown) ===
+## Data Loading & Preprocessing
+Load competition data, parse labels, build truth matrices.
+
+=== Cell 11 (code) ===
+taxonomy = pd.read_csv(BASE / "taxonomy.csv")
+sample_sub = pd.read_csv(BASE / "sample_submission.csv")
+soundscape_labels = pd.read_csv(BASE / "train_soundscapes_labels.csv")
+
+PRIMARY_LABELS = sample_sub.columns[1:].tolist()
+N_CLASSES = len(PRIMARY_LABELS)
+
+taxonomy["primary_label"] = taxonomy["primary_label"].astype(str)
+soundscape_labels["primary_label"] = soundscape_labels["primary_label"].astype(str)
+
+def parse_soundscape_labels(x):
+    if pd.isna(x):
+        return []
+    return [t.strip() for t in str(x).split(";") if t.strip()]
+
+FNAME_RE = re.compile(r"BC2026_(?:Train|Test)_(\d+)_(S\d+)_(\d{8})_(\d{6})\.ogg")
+
+def parse_soundscape_filename(name):
+    m = FNAME_RE.match(name)
+    if not m:
+        return {
+            "file_id": None,
+            "site": None,
+            "date": pd.NaT,
+            "time_utc": None,
+            "hour_utc": -1,
+            "month": -1,
+        }
+    file_id, site, ymd, hms = m.groups()
+    dt = pd.to_datetime(ymd, format="%Y%m%d", errors="coerce")
+    return {
+        "file_id": file_id,
+        "site": site,
+        "date": dt,
+        "time_utc": hms,
+        "hour_utc": int(hms[:2]),
+        "month": int(dt.month) if pd.notna(dt) else -1,
+    }
+
+def union_labels(series):
+    return sorted(set(lbl for x in series for lbl in parse_soundscape_labels(x)))
+
+# Deduplicate duplicated rows and aggregate labels per 5s window
+sc_clean = (
+    soundscape_labels
+    .groupby(["filename", "start", "end"])["primary_label"]
+    .apply(union_labels)
+    .reset_index(name="label_list")
+)
+
+sc_clean["start_sec"] = pd.to_timedelta(sc_clean["start"]).dt.total_seconds().astype(int)
+sc_clean["end_sec"] = pd.to_timedelta(sc_clean["end"]).dt.total_seconds().astype(int)
+sc_clean["row_id"] = sc_clean["filename"].str.replace(".ogg", "", regex=False) + "_" + sc_clean["end_sec"].astype(str)
+
+meta = sc_clean["filename"].apply(parse_soundscape_filename).apply(pd.Series)
+sc_clean = pd.concat([sc_clean, meta], axis=1)
+
+# Fully-labeled files
+windows_per_file 
+
+=== Cell 12 (code) ===
+CLASS_WEIGHTS = build_class_freq_weights(Y_FULL_TRUTH)
+print("✅ Class weights built")
+
+=== Cell 13 (code) ===
+# ── STEP 5: Isotonic Calibration + Threshold Optimization ──
+from sklearn.isotonic import IsotonicRegression
+
+def calibrate_and_optimize_thresholds(oof_probs, Y_FULL, 
+                                       threshold_grid, n_windows=12):
+    n_samples, n_cls = oof_probs.shape
+    thresholds = np.full(n_cls, 0.5, dtype=np.float32)
+    n_files  = n_samples // n_windows
+    file_oof = oof_probs.reshape(n_files, n_windows, n_cls).max(axis=1)
+    file_y   = Y_FULL.reshape(n_files, n_windows, n_cls).max(axis=1)
+
+    for c in range(n_cls):
+        y_true, y_prob = file_y[:, c], file_oof[:, c]
+        if y_true.sum() < 3:
+            continue
+        try:
+            ir = IsotonicRegression(out_of_bounds="clip")
+            ir.fit(y_prob, y_true)
+            y_cal = ir.transform(y_prob)
+        except:
+            y_cal = y_prob
+
+        best_f1, best_t = 0.0, 0.5
+        for t in threshold_grid:
+            pred = (y_cal >= t).astype(int)
+            tp = ((pred==1)&(y_true==1)).sum()
+            fp = ((pred==1)&(y_true==0)).sum()
+            fn = ((pred==0)&(y_true==1)).sum()
+            prec = tp/(tp+fp+1e-8)
+            rec  = tp/(tp+fn+1e-8)
+            f1   = 2*prec*rec/(prec+rec+1e-8)
+            if f1 > best_f1:
+                best_f1, best_t = f1, t
+        thresholds[c] = best_t
+
+    print(f"Mean threshold: {thresholds.mean():.3f}")
+    print(f"Range: [{thresholds.min():.2f}, {thresholds.max():.2f}]")
+    return thresholds
+
+print("✅ Calibration + Threshold function defined")
+
+=== Cell 14 (code) ===
+# ── STEP 6: Ensemble Weight Sweep ──
+def sweep_ensemble_weight(oof_proto, oof_mlp, Y_FULL, 
+                          n_windows=12,
+                          candidates=np.arange(0.3, 0.8, 0.05)):
+    n_files = oof_proto.shape[0] // n_windows
+    file_y  = Y_FULL.reshape(n_files, n_windows, -1).max(axis=1)
+    best_auc, best_w = 0.0, 0.6
+
+    for w in candidates:
+        blended   = w * oof_proto + (1-w) * oof_mlp
+        file_pred = blended.reshape(n_files, n_windows, -1).max(axis=1)
+        try:
+            auc = macro_auc_skip_empty(file_y, file_pred)
+        except:
+            continue
+        if auc > best_auc:
+            best_auc, best_w = auc, w
+
+    print(f"Best ensemble weight (proto): {best_w:.2f}")
+    print(f"Best AUC: {best_auc:.5f}")
+    return best_w
+
+print("✅ Ensemble Weight Sweep defined")
+
+=== Cell 15 (markdown) ===
+## Model & Mapping
+Load Perch v2 model and build species-to-BirdClassifier mapping.
+
+=== Cell 17 (markdown) ===
+## Utilities
+Metrics, smoothing, and feature helpers.
+
+=== Cell 18 (code) ===
+# Cell 4 — Metrics and helper utilities
+def macro_auc_skip_empty(y_true, y_score):
+    keep = y_true.sum(axis=0) > 0
+    return roc_auc_score(y_true[:, keep], y_score[:, keep], average="macro")
+
+def smooth_cols_fixed12(scores, cols, alpha=0.35):
+    if alpha <= 0 or len(cols) == 0:
+        return scores.copy()
+
+    s = scores.copy()
+    assert len(s) % N_WINDOWS == 0, "Expected full-file blocks of 12 windows"
+    view = s.reshape(-1, N_WINDOWS, s.shape[1])
+
+    x = view[:, :, cols]
+    prev_x = np.concatenate([x[:, :1, :], x[:, :-1, :]], axis=1)
+    next_x = np.concatenate([x[:, 1:, :], x[:, -1:, :]], axis=1)
+
+    view[:, :, cols] = (1.0 - alpha) * x + 0.5 * alpha * (prev_x + next_x)
+    return s
+
+def smooth_events_fixed12(scores, cols, alpha=0.15):
+    """Soft max-pool context for event birds (Aves).
+    Uses local_max instead of average neighbor, preserving transient call detection."""
+    if alpha <= 0 or len(cols) == 0:
+        return scores.copy()
+    s = scores.copy()
+    assert len(s) % N_WINDOWS == 0
+    view = s.reshape(-1, N_WINDOWS, s.shape[1])
+    x = view[:, :, cols]
+    prev_x = np.concatenate([x[:, :1, :], x[:, :-1, :]], axis=1)
+    next_x = np.concatenate([x[:, 1:, :], x[:, -1:, :]], axis=1)
+    local_max = np.maximum(x, np.maximum(prev_x, next_x))
+    view[:, :, cols] = (1.0 - alpha) * x + alpha * local_max
+    return s
+
+def seq_features_1d(v):
+    """
+    v: shape (n_rows,), ordered as full-file blocks of 12 windows
+    Extended: tambah std_v untuk capture variance temporal dalam file
+    """
+    assert len(v) % N_WINDOWS == 0, "Expected full-file blocks of 12 windows"
+    x = v.reshape(-1, N_WINDOWS)
+
+    prev_v = np.concatenate([x[:, :1], x[:, :-1]], axis=1).reshape(-1)
+    next_v = np.concatenate([x[:, 1:], x[:, -1:]], axis=1).reshape(-1)
+    mean_v = np.repeat(x.mean(axis=1), N_WINDOWS)
+    max_v  = np.repeat(x.max(axis=1),  N_WINDOWS)
+    std_v  = np.repeat(x.std(axis=1),  N_WINDOWS)
+
+    return prev_v, next_v, mean_v, max_v, std_v

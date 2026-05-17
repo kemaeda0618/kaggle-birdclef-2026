@@ -1,0 +1,2 @@
+## Setup
+Install dependencies and configure environment.

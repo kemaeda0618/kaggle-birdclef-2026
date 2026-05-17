@@ -1,0 +1,29 @@
+CODE CELL 0 (notebook index 1)
+================================================================================
+
+import subprocess, sys, glob
+from pathlib import Path
+
+# TF 2.20.0 wheel paths (try multiple locations)
+_candidates = [
+    Path("/kaggle/input/tensorflow-2-20-wheels"),
+    Path("/kaggle/input/notebooks/kdmitrie/bc26-tensorflow-2-20-0/wheel"),
+    Path("/kaggle/input/notebooks/kdmitrie/bc26-tensorflow-2-20-0"),
+]
+_WHL = None
+for d in _candidates:
+    if d.exists() and glob.glob(str(d / "tensorflow-2.20*.whl")):
+        _WHL = d
+        break
+if _WHL is None:
+    raise RuntimeError(
+        "TF wheel not found. Add tensorflow-2-20-wheels (Dataset) or kdmitrie/bc26-tensorflow-2-20-0 (Notebook)"
+    )
+
+tb_whl = glob.glob(str(_WHL / "tensorboard*.whl"))
+tf_whl = glob.glob(str(_WHL / "tensorflow-2.20*.whl"))
+
+if tb_whl:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", tb_whl[0]], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", tf_whl[0]], check=True)
+print("Installed TF 2.20.0 from", _WHL)

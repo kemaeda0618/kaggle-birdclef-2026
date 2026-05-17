@@ -1,0 +1,156 @@
+# === v142: B0+B3 + v5 quint (iter2 pseudo2 added) + sonotype mirroring ===
+from scipy.stats import rankdata
+import torchaudio, timm, librosa
+import torch.nn.functional as F
+_ST = time.time()
+
+class _SEDB0(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = timm.create_model("tf_efficientnet_b0.ns_jft_in1k", pretrained=False, in_chans=3, num_classes=0, global_pool="", drop_path_rate=0.15)
+        self.freq_pool = nn.AdaptiveAvgPool2d((1, None))
+        self.att = nn.Linear(1280, 1); self.fc = nn.Linear(1280, N_CLASSES); self.dropout = nn.Dropout(0.3)
+    def forward(self, x):
+        f = self.encoder(x); f = self.freq_pool(f).squeeze(2).permute(0,2,1)
+        return self.fc(self.dropout((f * torch.softmax(self.att(f), dim=1)).sum(dim=1)))
+
+class _SEDB3(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = timm.create_model("tf_efficientnet_b3.ns_jft_in1k", pretrained=False, in_chans=3, num_classes=0, global_pool="", drop_path_rate=0.15)
+        self.freq_pool = nn.AdaptiveAvgPool2d((1, None))
+        self.att = nn.Linear(1536, 1); self.fc = nn.Linear(1536, N_CLASSES); self.dropout = nn.Dropout(0.3)
+    def forward(self, x):
+        f = self.encoder(x); f = self.freq_pool(f).squeeze(2).permute(0,2,1)
+        return self.fc(self.dropout((f * torch.softmax(self.att(f), dim=1)).sum(dim=1)))
+
+class AttentionPool(nn.Module):
+    def __init__(self, in_features):
+        super().__init__()
+        self.attention = nn.Sequential(
+            nn.Linear(in_features, in_features),
+            nn.Tanh(),
+            nn.Linear(in_features, 1),
+        )
+    def forward(self, x):
+        w = self.attention(x); w = F.softmax(w, dim=1)
+        return (x * w).sum(dim=1)
+
+class BirdSEDModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.backbone = timm.create_model("tf_efficientnet_b0.ns_jft_in1k", pretrained=False, in_chans=1, num_classes=0, global_pool="")
+        with torch.no_grad():
+            dummy = torch.randn(1, 1, 128, 313); feat = self.backbone(dummy)
+            self.feat_dim = feat.shape[1] * feat.shape[2] if feat.dim() == 4 else feat.shape[-1]
+        self.pool = AttentionPool(self.feat_dim)
+        self.head = nn.Sequential(
+            nn.Linear(self.feat_dim, 512), nn.ReLU(inplace=True), nn.Dropout(0.3), nn.Linear(512, N_CLASSES),
+        )
+    def forward(self, x):
+        feat = self.backbone(x)
+        if feat.dim() == 4:
+            b, c, h, w = feat.shape; feat = feat.permute(0, 3, 1, 2).reshape(b, w, c * h)
+        elif feat.dim() == 3:
+            feat = feat.permute(0, 2, 1)
+        return self.head(self.pool(feat))
+
+_b0_b3 = []
+for _sd in ["/kaggle/input/datasets/needless090/birdclef2026-sed-ensemble", "/kaggle/input/birdclef2026-sed-ensemble"]:
+    if os.path.exists(_sd):
+        for _f in [0, 1]:
+            _p = f"{_sd}/sed_fold{_f}.pt"
+            if os.path.exists(_p):
+                try:
+                    _m = _SEDB0(); _m.load_state_dict(torch.load(_p, map_location="cpu", weights_only=True)); _m.eval()
+                    _b0_b3.append(_m); print(f"  B0 fold{_f}")
+                except Exception as _e: print(f"  B0f{_f}: {_e}")
+        _p = f"{_sd}/sed_b3_fold0.pt"
+        if os.path.exists(_p):
+            try:
+                _m = _SEDB3(); _m.load_state_dict(torch.load(_p, map_location="cpu", weights_only=True)); _m.eval()
+                _b0_b3.append(_m); print(f"  B3 fold0")
+            except Exception as _e: print(f"  B3: {_e}")
+        break
+print(f"B0+B3 models: {len(_b0_b3)}")
+
+# v5 quint: v5_focal, ce_s123, ce_s456, v5_pseudo, v5_pseudo2
+_v5_models = []
+for _vd in ["/kaggle/input/datasets/needless090/birdclef2026-sed-v5-trio", "/kaggle/input/birdclef2026-sed-v5-trio"]:
+    if os.path.exists(_vd):
+        for _name in ["best_model_v5_focal.pt", "best_model_ce_s123.pt", "best_model_ce_s456.pt", "v5_pseudo.pt", "v5_pseudo2.pt"]:
+            _p = f"{_vd}/{_name}"
+            if os.path.exists(_p):
+                try:
+                    _m = BirdSEDModel(); _m.load_state_dict(torch.load(_p, map_location="cpu", weights_only=True)); _m.eval()
+                    _v5_models.append(_m); print(f"  {_name}")
+                except Exception as _e: print(f"  {_name}: {_e}")
+        break
+print(f"v5 quint models: {len(_v5_models)}")
+
+if _b0_b3 or _v5_models:
+    _mtf_224 = torchaudio.transforms.MelSpectrogram(sample_rate=SR, n_fft=2048, hop_length=512, n_mels=224, f_min=20, f_max=16000)
+    _adb_224 = torchaudio.transforms.AmplitudeToDB(top_db=80)
+
+    def _mel_128_v5(y):
+        S = librosa.feature.melspectrogram(y=y, sr=SR, n_fft=2048, hop_length=512, n_mels=128, fmin=20, fmax=16000)
+        S_db = librosa.power_to_db(S, ref=np.max); S_db = (S_db + 80.0) / 80.0
+        S_db = np.clip(S_db, 0.0, 1.0)
+        return torch.from_numpy(S_db[np.newaxis, np.newaxis, :, :]).float()
+
+    _sp = np.zeros_like(probs)
+    for _fi, _fp in enumerate(test_paths):
+        _y = read_soundscape_60s(_fp)
+        _all_preds = []
+
+        if _b0_b3:
+            _ms = []
+            for _wi in range(N_WINDOWS):
+                _ch = _y[_wi*WINDOW_SAMPLES:(_wi+1)*WINDOW_SAMPLES]
+                _yt = torch.tensor(_ch).unsqueeze(0); _mel = _adb_224(_mtf_224(_yt))
+                _mel = (_mel - _mel.mean()) / (_mel.std() + 1e-8); _ms.append(_mel)
+            _b = torch.cat(_ms, dim=0).unsqueeze(1).expand(-1, 3, -1, -1)
+            with torch.no_grad():
+                for _m in _b0_b3:
+                    _all_preds.append(torch.sigmoid(_m(_b)).cpu().numpy())
+
+        if _v5_models:
+            _v5_batch = []
+            for _wi in range(N_WINDOWS):
+                _ch = _y[_wi*WINDOW_SAMPLES:(_wi+1)*WINDOW_SAMPLES].astype(np.float32)
+                if len(_ch) < WINDOW_SAMPLES:
+                    _ch = np.pad(_ch, (0, WINDOW_SAMPLES - len(_ch)))
+                _v5_batch.append(_mel_128_v5(_ch))
+            _vb = torch.cat(_v5_batch, dim=0)
+            with torch.no_grad():
+                for _m in _v5_models:
+                    _all_preds.append(torch.sigmoid(_m(_vb)).cpu().numpy())
+
+        if _all_preds:
+            _sp[_fi*N_WINDOWS:(_fi+1)*N_WINDOWS] = np.mean(np.stack(_all_preds), axis=0)
+        if (_fi+1) % 100 == 0: print(f"  SED: {_fi+1}/{len(test_paths)} ({time.time()-_ST:.0f}s)")
+    print(f"SED done ({time.time()-_ST:.1f}s)")
+
+    _pp = probs.copy()
+    PW, SW = 0.7, 0.3
+    for _ci in range(N_CLASSES):
+        _pr = rankdata(_pp[:, _ci]); _sr = rankdata(_sp[:, _ci])
+        probs[:, _ci] = (PW * _pr + SW * _sr) / len(_pr)
+    probs = np.clip(probs, 0.0, 1.0)
+    print(f"Rank avg 70/30 applied")
+
+    MIRROR_PAIRS = (
+        ("47158son15", "47158son16"),
+        ("47158son09", "47158son12"),
+        ("47158son02", "47158son14"),
+        ("47158son13", "47158son21", "47158son22", "47158son23"),
+    )
+    _l2i = {l: i for i, l in enumerate(PRIMARY_LABELS)}
+    for group in MIRROR_PAIRS:
+        idx = [_l2i[sp] for sp in group if sp in _l2i]
+        if len(idx) >= 2:
+            max_val = probs[:, idx].max(axis=1, keepdims=True)
+            for ix in idx:
+                probs[:, ix] = max_val.squeeze()
+    print(f"Mirroring applied: {len(MIRROR_PAIRS)} groups")
+    del _b0_b3, _v5_models, _sp; gc.collect()

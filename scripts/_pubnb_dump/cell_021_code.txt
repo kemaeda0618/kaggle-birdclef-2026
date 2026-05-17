@@ -1,0 +1,197 @@
+# Cell 5 — Perch inference with embeddings + selective proxies
+def read_soundscape_60s(path):
+    y, sr = sf.read(path, dtype="float32", always_2d=False)
+    if y.ndim == 2:
+        y = y.mean(axis=1)
+    if sr != SR:
+        raise ValueError(f"Unexpected sample rate {sr} in {path}; expected {SR}")
+    if len(y) < FILE_SAMPLES:
+        y = np.pad(y, (0, FILE_SAMPLES - len(y)))
+    elif len(y) > FILE_SAMPLES:
+        y = y[:FILE_SAMPLES]
+    return y
+
+def infer_perch_with_embeddings(paths, batch_files=16, verbose=True, proxy_reduce="max"):
+    paths = [Path(p) for p in paths]
+    n_files = len(paths)
+    n_rows = n_files * N_WINDOWS
+
+    row_ids = np.empty(n_rows, dtype=object)
+    filenames = np.empty(n_rows, dtype=object)
+    sites = np.empty(n_rows, dtype=object)
+    hours = np.empty(n_rows, dtype=np.int16)
+
+    scores = np.zeros((n_rows, N_CLASSES), dtype=np.float32)
+    embeddings = np.zeros((n_rows, 1536), dtype=np.float32)
+
+    write_row = 0
+    iterator = range(0, n_files, batch_files)
+    if verbose:
+        iterator = tqdm(iterator, total=(n_files + batch_files - 1) // batch_files, desc="Perch batches")
+
+    for start in iterator:
+        batch_paths = paths[start:start + batch_files]
+        batch_n = len(batch_paths)
+
+        x = np.empty((batch_n * N_WINDOWS, WINDOW_SAMPLES), dtype=np.float32)
+        batch_row_start = write_row
+        x_pos = 0
+
+        for path in batch_paths:
+            y = read_soundscape_60s(path)
+            x[x_pos:x_pos + N_WINDOWS] = y.reshape(N_WINDOWS, WINDOW_SAMPLES)
+
+            meta = parse_soundscape_filename(path.name)
+            stem = path.stem
+
+            row_ids[write_row:write_row + N_WINDOWS] = [f"{stem}_{t}" for t in range(5, 65, 5)]
+            filenames[write_row:write_row + N_WINDOWS] = path.name
+            sites[write_row:write_row + N_WINDOWS] = meta["site"]
+            hours[write_row:write_row + N_WINDOWS] = int(meta["hour_utc"])
+
+            x_pos += N_WINDOWS
+            write_row += N_WINDOWS
+
+        outputs = infer_fn(inputs=tf.convert_to_tensor(x))
+        logits = outputs["label"].numpy().astype(np.float32, copy=False)
+        emb = outputs["embedding"].numpy().astype(np.float32, copy=False)
+
+        scores[batch_row_start:write_row, MAPPED_POS] = logits[:, MAPPED_BC_INDICES]
+        embeddings[batch_row_start:write_row] = emb
+
+        # Selected frog proxies
+        for pos, bc_idx_arr in selected_proxy_pos_to_bc.items():
+            sub = logits[:, bc_idx_arr]
+            if proxy_reduce == "max":
+                proxy_score = sub.max(axis=1)
+            elif proxy_reduce == "mean":
+                proxy_score = sub.mean(axis=1)
+            else:
+                raise ValueError("proxy_reduce must be 'max' or 'mean'")
+            scores[batch_row_start:write_row, pos] = proxy_score.astype(np.float32)
+
+        del x, outputs, logits, emb
+        gc.collect()
+
+    meta_df = pd.DataFrame({
+        "row_id": row_ids,
+        "filename": filenames,
+        "site": sites,
+        "hour_utc": hours,
+    })
+
+    return meta_df, scores, embeddings
+
+# === TFLite Perch (4x faster) ===
+def infer_perch_tflite(paths, verbose=True):
+    import time as _t
+    _t0 = _t.time()
+    _tflite_path = None
+    for _c in ["/kaggle/input/datasets/needless090/birdclef2026-perch-tflite/perch_v2.tflite",
+               "/kaggle/input/birdclef2026-perch-tflite/perch_v2.tflite"]:
+        if os.path.exists(_c):
+            _tflite_path = _c
+            break
+    if _tflite_path is None:
+        print("TFLite not found, fallback to SavedModel")
+        return infer_perch_with_embeddings(paths, batch_files=CFG["batch_files"], verbose=verbose, proxy_reduce=CFG["proxy_reduce"])
+    print(f"Using TFLite: {_tflite_path}")
+    _interp = tf.lite.Interpreter(model_path=_tflite_path, num_threads=4)
+    _id = _interp.get_input_details()
+    _interp.resize_tensor_input(_id[0]["index"], [N_WINDOWS, WINDOW_SAMPLES])
+    _interp.allocate_tensors()
+    _od = _interp.get_output_details()
+    _om = {}
+    for _o in _od:
+        if _o["shape"][-1] == 1536 and len(_o["shape"]) == 2: _om["emb"] = _o["index"]
+        elif _o["shape"][-1] == 14795: _om["lab"] = _o["index"]
+    paths = [Path(p) for p in paths]
+    n_files = len(paths)
+    n_rows = n_files * N_WINDOWS
+    row_ids = np.empty(n_rows, dtype=object)
+    filenames = np.empty(n_rows, dtype=object)
+    sites = np.empty(n_rows, dtype=object)
+    hours = np.empty(n_rows, dtype=np.int16)
+    scores = np.zeros((n_rows, N_CLASSES), dtype=np.float32)
+    embeddings = np.zeros((n_rows, 1536), dtype=np.float32)
+    for fi, path in enumerate(paths):
+        y = read_soundscape_60s(path)
+        x = y.reshape(N_WINDOWS, WINDOW_SAMPLES).astype(np.float32)
+        _interp.set_tensor(_id[0]["index"], x)
+        _interp.invoke()
+        emb = _interp.get_tensor(_om["emb"])
+        logits = _interp.get_tensor(_om["lab"])
+        ws, we = fi * N_WINDOWS, (fi + 1) * N_WINDOWS
+        scores[ws:we, MAPPED_POS] = logits[:, MAPPED_BC_INDICES]
+        embeddings[ws:we] = emb
+        for pos, bc_idx_arr in selected_proxy_pos_to_bc.items():
+            scores[ws:we, pos] = logits[:, bc_idx_arr].max(axis=1).astype(np.float32)
+        meta = parse_soundscape_filename(path.name)
+        stem = path.stem
+        row_ids[ws:we] = [f"{stem}_{t}" for t in range(5, 65, 5)]
+        filenames[ws:we] = path.name
+        sites[ws:we] = meta["site"]
+        hours[ws:we] = int(meta["hour_utc"])
+        if verbose and (fi + 1) % 50 == 0:
+            _el = _t.time() - _t0
+            print(f"  TFLite: {fi+1}/{n_files} ({_el:.0f}s, ETA {_el/(fi+1)*(n_files-fi-1):.0f}s)")
+    meta_df = pd.DataFrame({"row_id": row_ids, "filename": filenames, "site": sites, "hour_utc": hours})
+    print(f"TFLite: {n_files} files in {_t.time()-_t0:.1f}s")
+    return meta_df, scores, embeddings
+
+
+# === ONNX Perch ===
+def infer_perch_onnx(paths, verbose=True):
+    import time as _t
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("onnxruntime import failed, fallback to TFLite")
+        return infer_perch_tflite(paths, verbose)
+    _t0 = _t.time()
+    _p = None
+    for _c in ["/kaggle/input/datasets/rishikeshjani/perch-onnx-for-birdclef-2026/perch_v2.onnx",
+               "/kaggle/input/perch-onnx-for-birdclef-2026/perch_v2.onnx"]:
+        if os.path.exists(_c): _p = _c; break
+    if _p is None:
+        print("ONNX not found, fallback to TFLite")
+        return infer_perch_tflite(paths, verbose)
+    print(f"Using ONNX: {_p}")
+    _so = ort.SessionOptions(); _so.intra_op_num_threads = 4
+    _sess = ort.InferenceSession(_p, sess_options=_so, providers=["CPUExecutionProvider"])
+    _in = _sess.get_inputs()[0].name
+    _om = {}
+    for _i, _o in enumerate(_sess.get_outputs()):
+        _sh = _o.shape
+        _last = _sh[-1] if (len(_sh) >= 1 and isinstance(_sh[-1], int)) else None
+        if _last == 1536 and len(_sh) == 2: _om["emb"] = _i
+        elif _last == 14795: _om["lab"] = _i
+    if "emb" not in _om or "lab" not in _om:
+        print(f"ONNX shape mismatch, fallback")
+        return infer_perch_tflite(paths, verbose)
+    paths = [Path(p) for p in paths]
+    n_files = len(paths); n_rows = n_files * N_WINDOWS
+    row_ids = np.empty(n_rows, dtype=object); filenames = np.empty(n_rows, dtype=object)
+    sites = np.empty(n_rows, dtype=object); hours = np.empty(n_rows, dtype=np.int16)
+    scores = np.zeros((n_rows, N_CLASSES), dtype=np.float32)
+    embeddings = np.zeros((n_rows, 1536), dtype=np.float32)
+    for fi, path in enumerate(paths):
+        y = read_soundscape_60s(path)
+        x = y.reshape(N_WINDOWS, WINDOW_SAMPLES).astype(np.float32)
+        _outs = _sess.run(None, {_in: x})
+        emb = _outs[_om["emb"]]; logits = _outs[_om["lab"]]
+        ws, we = fi * N_WINDOWS, (fi + 1) * N_WINDOWS
+        scores[ws:we, MAPPED_POS] = logits[:, MAPPED_BC_INDICES]
+        embeddings[ws:we] = emb
+        for pos, bc_idx_arr in selected_proxy_pos_to_bc.items():
+            scores[ws:we, pos] = logits[:, bc_idx_arr].max(axis=1).astype(np.float32)
+        meta = parse_soundscape_filename(path.name)
+        stem = path.stem
+        row_ids[ws:we] = [f"{stem}_{t}" for t in range(5, 65, 5)]
+        filenames[ws:we] = path.name; sites[ws:we] = meta["site"]; hours[ws:we] = int(meta["hour_utc"])
+        if verbose and (fi + 1) % 50 == 0:
+            _el = _t.time() - _t0
+            print(f"  ONNX: {fi+1}/{n_files} ({_el:.0f}s)")
+    meta_df = pd.DataFrame({"row_id": row_ids, "filename": filenames, "site": sites, "hour_utc": hours})
+    print(f"ONNX: {n_files} files in {_t.time()-_t0:.1f}s")
+    return meta_df, scores, embeddings

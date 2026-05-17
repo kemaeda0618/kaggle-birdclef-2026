@@ -1,0 +1,44 @@
+"""Push exp013 R1 eval NB (no submission, just validation)."""
+import json, os, io, sys, tempfile, shutil
+from pathlib import Path
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
+if os.name == "nt" and not os.environ.get("PYTHONUTF8"):
+    os.environ["PYTHONUTF8"] = "1"
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+if not os.environ.get("KAGGLE_API_TOKEN"):
+    _kgat = json.loads((Path.home() / ".kaggle" / "kaggle.json").read_text())["key"]
+    os.environ["KAGGLE_API_TOKEN"] = _kgat
+
+from kaggle.api.kaggle_api_extended import KaggleApi
+api = KaggleApi(); api.authenticate()
+
+NB = Path(__file__).with_name("nb_eval_r1.ipynb")
+USER = "maekeso"
+SLUG = "birdclef2026-exp013-eval-r1"
+TITLE = "BirdCLEF2026 exp013 Eval R1"
+
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    shutil.copy(NB, td / NB.name)
+    meta = {
+        "id": f"{USER}/{SLUG}",
+        "title": TITLE,
+        "code_file": NB.name,
+        "language": "python",
+        "kernel_type": "notebook",
+        "is_private": True,
+        "enable_internet": True,
+        "competition_sources": ["birdclef-2026"],
+        "dataset_sources": [
+            "tuckerarrants/bc2026-distilled-sed-public",
+            "maekeso/birdclef2026-exp013-r1-student-sed",
+        ],
+        "kernel_sources": [],
+    }
+    (td / "kernel-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    r = api.kernels_push(str(td))
+    print("URL:", r.url)
+    print("Version:", r.version_number)

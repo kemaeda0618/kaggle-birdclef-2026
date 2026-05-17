@@ -1,0 +1,335 @@
+
+============================================================
+G26 isotonic / threshold
+============================================================
+  matches: 1 cells
+
+--- Cell 24 (code) [first 4000 chars] ---
+# ── Cell 7f-3: Isotonic Calibration + Per-Class Threshold Optimization ──
+# CHANGE 2: Used by top notebooks (a.txt/d.txt), expected +0.004–0.008
+# Trains isotonic regression per class on OOF scores to calibrate probs,
+# then finds the best F1-threshold per species via grid search.
+from sklearn.isotonic import IsotonicRegression
+
+def calibrate_and_optimize_thresholds(oof_probs, Y_FULL, 
+                                       threshold_grid=None, n_windows=12):
+    """
+    CHANGE 2: For each species:
+    1. Fit isotonic regression on OOF scores (calibrates overconfident/underconfident classes)
+    2. Grid-search F1-optimal threshold over calibrated probs
+    Returns: thresholds array of shape (n_classes,)
+    """
+    if threshold_grid is None:
+        threshold_grid = [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]
+    
+    n_samples, n_cls = oof_probs.shape
+    thresholds = np.full(n_cls, 0.5, dtype=np.float32)
+    n_files    = n_samples // n_windows
+    file_oof   = oof_probs.reshape(n_files, n_windows, n_cls).max(axis=1)
+    file_y     = Y_FULL.reshape(n_files, n_windows, n_cls).max(axis=1)
+    
+    n_calibrated = 0
+    for c in range(n_cls):
+        y_true = file_y[:, c]
+        y_prob = file_oof[:, c]
+        if y_true.sum() < 3:
+            continue
+        try:
+            ir = IsotonicRegression(out_of_bounds="clip")
+            ir.fit(y_prob, y_true)
+            y_cal = ir.transform(y_prob)
+        except Exception:
+            y_cal = y_prob
+        
+        best_f1, best_t = 0.0, 0.5
+        for t in threshold_grid:
+            pred = (y_cal >= t).astype(int)
+            tp = ((pred==1) & (y_true==1)).sum()
+            fp = ((pred==1) & (y_true==0)).sum()
+            fn = ((pred==0) & (y_true==1)).sum()
+            prec = tp / (tp + fp + 1e-8)
+            rec  = tp / (tp + fn + 1e-8)
+            f1   = 2 * prec * rec / (prec + rec + 1e-8)
+            if f1 > best_f1:
+                best_f1, best_t = f1, t
+        thresholds[c] = best_t
+        n_calibrated += 1
+    
+    print(f"Calibrated {n_calibrated} classes")
+    print(f"Mean threshold: {thresholds.mean():.3f}")
+    print(f"Range: [{thresholds.min():.2f}, {thresholds.max():.2f}]")
+    return thresholds
+
+
+def apply_per_class_thresholds(scores, thresholds):
+    """
+    Sharpens probabilities around the per-class threshold:
+    - above threshold → push toward 1
+    - below threshold → push toward 0
+    """
+    C = scores.shape[1]
+    assert C == len(thresholds)
+    scaled = np.copy(scores)
+    for c in range(C):
+        t = thresholds[c]
+        above = scores[:, c] > t
+        scaled[ above, c] = 0.5 + 0.5 * (scores[ above, c] - t) / (1 - t + 1e-8)
+        scaled[~above, c] = 0.5 * scores[~above, c] / (t + 1e-8)
+    return np.clip(scaled, 0.0, 1.0)
+
+print("✅ CHANGE 2: Isotonic calibration + per-class threshold optimization defined")
+
+
+
+============================================================
+G27 cross-branch gate
+============================================================
+  matches: 1 cells
+
+--- Cell 40 (code) [first 4000 chars] ---
+import os
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+PROTOSSM_CSV = "submission_protossm.csv"
+SED_CSV      = "submission_sed.csv"
+OUT_CSV      = "submission.csv"
+
+EPS = 1e-5
+
+df_proto = pd.read_csv(PROTOSSM_CSV)
+df_sed   = pd.read_csv(SED_CSV)
+
+cols = [c for c in df_proto.columns if c != "row_id"]
+
+df_sed = df_sed.set_index("row_id").loc[df_proto["row_id"]].reset_index()
+p_proto = np.clip(df_proto[cols].to_numpy(np.float32), EPS, 1.0 - EPS)
+p_sed   = np.clip(df_sed[cols].to_numpy(np.float32), EPS, 1.0 - EPS)
+
+rank_proto = pd.DataFrame(p_proto).rank(axis=0, pct=True).to_numpy(np.float32)
+rank_sed   = pd.DataFrame(p_sed).rank(axis=0, pct=True).to_numpy(np.float32)
+
+print("Executing standard 2-way rank blend (60% Proto / 40% SED)...")
+pred = (rank_proto * 0.60) + (rank_sed * 0.40)
+
+row_ids = df_proto["row_id"].astype(str).to_numpy()
+file_ids = np.array(["_".join(r.split("_")[:-1]) for r in row_ids])
+
+fake_only = (p_proto > 0.50) & (p_sed < 0.05)
+pred = np.where(fake_only, (1.0 - 0.08) * pred + 0.08 * rank_proto, pred)
+
+offs = np.arange(-3, 4, dtype=np.float32)
+proto_kernel = (1.0 + (offs / 1.20) ** 2 / 2.0) ** (-1.5)
+proto_kernel = (proto_kernel / proto_kernel.sum()).astype(np.float32)
+
+pa_ctx = p_proto.copy()
+for fid in pd.unique(file_ids):
+    m = file_ids == fid
+    x = p_proto[m]
+    if len(x) > 1:
+        xp = np.pad(x, ((3, 3), (0, 0)), mode="edge")
+        pa_ctx[m] = sum(proto_kernel[i] * xp[i:i + len(x)] for i in range(7))
+
+xctx = pd.DataFrame(pa_ctx).rank(axis=0, pct=True).to_numpy(np.float32)
+proto_cont = (xctx > 0.88) & (rank_proto > 0.75) & (p_sed < 0.12) & (~fake_only)
+pred = np.where(proto_cont, (1.0 - 0.15) * pred + 0.15 * np.maximum(rank_proto, xctx), pred)
+
+sed_only = (rank_sed > 0.95) & (rank_proto < 0.80) & (~fake_only) & (~proto_cont)
+pred = np.where(sed_only, (1.0 - 0.12) * pred + 0.12 * rank_sed, pred)
+
+sub = df_proto.copy()
+sub[cols] = pred.astype(np.float32)
+
+MIRROR_PAIRS = (
+    ("47158son15", "47158son16"), 
+    ("47158son09", "47158son12"),
+    ("47158son02", "47158son14"), 
+    ("47158son13", "47158son21", "47158son22", "47158son23")
+)
+col_to_idx = {l: i for i, l in enumerate(cols)}
+
+mirror_count = 0
+for group in MIRROR_PAIRS:
+    valid_idx = [col_to_idx[s] for s in group if s in col_to_idx]
+    if len(valid_idx) >= 2:
+        group_max = sub[cols].iloc[:, valid_idx].max(axis=1).to_numpy(np.float32)
+        for idx in valid_idx:
+            sub.iloc[:, idx + 1] = group_max
+        mirror_count += len(valid_idx)
+print(f"Sonotype mirroring applied to {mirror_count} columns.")
+
+# Rare-taxon adaptive suppression disabled in exp_044c.
+# V8 applies: vals < vals.mean() + 0.05 -> vals * 0.9 for Amphibia/Mammalia/Reptilia.
+# We keep sonotype mirroring but test whether this final suppression is too aggressive on public LB.
+print("Adaptive rare-taxon suppression disabled.")
+test_paths = list((BASE / "test_soundscapes").glob("*.ogg"))
+IS_DRY_RUN = len(test_paths) == 0
+
+if IS_DRY_RUN:
+    print("Dry-run detected: Aligning rows with sample_submission.csv")
+    sample_public = pd.read_csv(BASE / "sample_submission.csv")
+    template = sub[cols].mean(axis=0).astype(np.float32)
+    sub = sample_public.copy()
+    for label in cols:
+        sub[label] = template[label]
+
+sub.to_csv(OUT_CSV, index=False)
+print("Blend and post-processing complete. Ready for submission!")
+print(f"Saved {OUT_CSV}: {sub.shape}")
+
+
+
+============================================================
+G28 student-t kernel
+============================================================
+  matches: 0 cells
+
+============================================================
+Sonotype mirroring
+============================================================
+  matches: 1 cells
+
+--- Cell 40 (code) [first 4000 chars] ---
+import os
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+PROTOSSM_CSV = "submission_protossm.csv"
+SED_CSV      = "submission_sed.csv"
+OUT_CSV      = "submission.csv"
+
+EPS = 1e-5
+
+df_proto = pd.read_csv(PROTOSSM_CSV)
+df_sed   = pd.read_csv(SED_CSV)
+
+cols = [c for c in df_proto.columns if c != "row_id"]
+
+df_sed = df_sed.set_index("row_id").loc[df_proto["row_id"]].reset_index()
+p_proto = np.clip(df_proto[cols].to_numpy(np.float32), EPS, 1.0 - EPS)
+p_sed   = np.clip(df_sed[cols].to_numpy(np.float32), EPS, 1.0 - EPS)
+
+rank_proto = pd.DataFrame(p_proto).rank(axis=0, pct=True).to_numpy(np.float32)
+rank_sed   = pd.DataFrame(p_sed).rank(axis=0, pct=True).to_numpy(np.float32)
+
+print("Executing standard 2-way rank blend (60% Proto / 40% SED)...")
+pred = (rank_proto * 0.60) + (rank_sed * 0.40)
+
+row_ids = df_proto["row_id"].astype(str).to_numpy()
+file_ids = np.array(["_".join(r.split("_")[:-1]) for r in row_ids])
+
+fake_only = (p_proto > 0.50) & (p_sed < 0.05)
+pred = np.where(fake_only, (1.0 - 0.08) * pred + 0.08 * rank_proto, pred)
+
+offs = np.arange(-3, 4, dtype=np.float32)
+proto_kernel = (1.0 + (offs / 1.20) ** 2 / 2.0) ** (-1.5)
+proto_kernel = (proto_kernel / proto_kernel.sum()).astype(np.float32)
+
+pa_ctx = p_proto.copy()
+for fid in pd.unique(file_ids):
+    m = file_ids == fid
+    x = p_proto[m]
+    if len(x) > 1:
+        xp = np.pad(x, ((3, 3), (0, 0)), mode="edge")
+        pa_ctx[m] = sum(proto_kernel[i] * xp[i:i + len(x)] for i in range(7))
+
+xctx = pd.DataFrame(pa_ctx).rank(axis=0, pct=True).to_numpy(np.float32)
+proto_cont = (xctx > 0.88) & (rank_proto > 0.75) & (p_sed < 0.12) & (~fake_only)
+pred = np.where(proto_cont, (1.0 - 0.15) * pred + 0.15 * np.maximum(rank_proto, xctx), pred)
+
+sed_only = (rank_sed > 0.95) & (rank_proto < 0.80) & (~fake_only) & (~proto_cont)
+pred = np.where(sed_only, (1.0 - 0.12) * pred + 0.12 * rank_sed, pred)
+
+sub = df_proto.copy()
+sub[cols] = pred.astype(np.float32)
+
+MIRROR_PAIRS = (
+    ("47158son15", "47158son16"), 
+    ("47158son09", "47158son12"),
+    ("47158son02", "47158son14"), 
+    ("47158son13", "47158son21", "47158son22", "47158son23")
+)
+col_to_idx = {l: i for i, l in enumerate(cols)}
+
+mirror_count = 0
+for group in MIRROR_PAIRS:
+    valid_idx = [col_to_idx[s] for s in group if s in col_to_idx]
+    if len(valid_idx) >= 2:
+        group_max = sub[cols].iloc[:, valid_idx].max(axis=1).to_numpy(np.float32)
+        for idx in valid_idx:
+            sub.iloc[:, idx + 1] = group_max
+        mirror_count += len(valid_idx)
+print(f"Sonotype mirroring applied to {mirror_count} columns.")
+
+# Rare-taxon adaptive suppression disabled in exp_044c.
+# V8 applies: vals < vals.mean() + 0.05 -> vals * 0.9 for Amphibia/Mammalia/Reptilia.
+# We keep sonotype mirroring but test whether this final suppression is too aggressive on public LB.
+print("Adaptive rare-taxon suppression disabled.")
+test_paths = list((BASE / "test_soundscapes").glob("*.ogg"))
+IS_DRY_RUN = len(test_paths) == 0
+
+if IS_DRY_RUN:
+    print("Dry-run detected: Aligning rows with sample_submission.csv")
+    sample_public = pd.read_csv(BASE / "sample_submission.csv")
+    template = sub[cols].mean(axis=0).astype(np.float32)
+    sub = sample_public.copy()
+    for label in cols:
+        sub[label] = template[label]
+
+sub.to_csv(OUT_CSV, index=False)
+print("Blend and post-processing complete. Ready for submission!")
+print(f"Saved {OUT_CSV}: {sub.shape}")
+
+
+
+============================================================
+Rare suppression
+============================================================
+  matches: 0 cells
+
+============================================================
+CELL OVERVIEW (first lines)
+============================================================
+  [  0 mark] # exp_044c: V8 Without Rare-Taxon Suppression
+  [  1 mark] # BirdCLEF+ 2026: 0.941 Public LB with ONNX Perch Sequence Modeling and SED Blend
+  [  2 code] # ── Cell 0: Resolve inputs + install optional runtimes ─────────────────
+  [  3 code] # ── Cell 0b: Reproducibility seed ─────────────────────────────────────
+  [  4 code] # ── Cell 1: Mode switch ────────────────────────────────────────────────
+  [  5 mark] ## Configuration
+  [  6 code] # ── Cell 2: Imports & config ───────────────────────────────────────────
+  [  7 mark] ## Data and Label Setup
+  [  8 code] # ── Cell 3: Data loading & label parsing ──────────────────────────────
+  [  9 mark] ## Perch Backbone
+  [ 10 code] # ── Cell 4: Load Perch model (ONNX preferred) ─────────────────────────
+  [ 11 code] # ── Cell 4b: Genus proxy logits for unmapped species ──────────────────
+  [ 12 mark] ## Window-Level Inference Cache
+  [ 13 code] # ── Cell 5: Perch inference engine (ONNX + multithreaded I/O) ─────────
+  [ 14 code] # ── Cell 6: Build-or-load Perch training cache ────────────────────────
+  [ 15 mark] ## Validation and Post-Processing Helpers
+  [ 16 code] # ── Cell 7: Metric helpers ─────────────────────────────────────────────
+  [ 17 code] # ── Cell 7b: Temporal smoothing helper ─────────────────────────────────
+  [ 18 code] # ── Cell 7c: Prior table builder ───────────────────────────────────────
+  [ 19 code] # ── Cell 7d: File-level confidence scaling ─────────────────────────────
+  [ 20 code] # ── Cell 7e: Per-taxon temperature scaling ─────────────────────────────
+  [ 21 mark] ## Lightweight Perch-Embedding Learners
+  [ 22 code] # ── Cell 7f: UPGRADED MLP probe on PCA embeddings ─────────────────────
+  [ 23 code] # ── Cell 7f-2: Vectorized MLP probe inference ──────────────────────────
+  [ 24 code] # ── Cell 7f-3: Isotonic Calibration + Per-Class Threshold Optimization ──
+  [ 25 code] # ── Cell 7g: Rank-aware scaling ────────────────────────────────────────
+  [ 26 code] # ── Cell 7h: Adaptive delta smoothing ─────────────────────────────────
+  [ 27 mark] ## Sequence Modeling: ProtoSSM and ResidualSSM
+  [ 28 code] # ── Cell 7i: LightProtoSSM WITH Cross-Attention ────────────────────────
+  [ 29 code] # ── Cell 7i-2: TTA — Circular Shift Test-Time Augmentation ───────────
+  [ 30 code] # ── Cell 7j: Residual SSM (second-pass error correction) ──────────────
+  [ 31 code] # ── Cell 8: OOF evaluation (train mode only) ──────────────────────────
+  [ 32 code] # ── Cell 8b: Full Pipeline OOF ─────────────────────────────────────────
+  [ 33 mark] ## Test or Dry-Run Inference
+  [ 34 code] # ── Cell 9: Test inference ─────────────────────────────────────────────
+  [ 35 mark] ## ProtoSSM Branch Output
+  [ 36 code] # ── Cell 10: Full pipeline with ProtoSSM + ResidualSSM ─────────────────
+  [ 37 mark] ## Distilled SED Branch
+  [ 38 code] # ── Cell 11: Tucker Arrants distilled SED ONNX inference ──────────────
+  [ 39 mark] ## Final Blend
+  [ 40 code] import os

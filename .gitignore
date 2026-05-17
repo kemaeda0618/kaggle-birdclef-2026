@@ -1,0 +1,70 @@
+# === Kaggle competition data (must NOT redistribute) ===
+train_audio/
+train_soundscapes/
+test_soundscapes/
+train.csv
+train_soundscapes_labels.csv
+taxonomy.csv
+sample_submission.csv
+recording_location.txt
+submission.csv
+
+# === Heavy caches (regenerable) ===
+_perch_cache_work/
+_tmp_nb_ding/
+tucker_cache/
+tucker_meta_test/
+survey/mel_cache_outputs/
+experiment/eda_mel/
+experiment/mel_cache/
+experiment/mel_cache_256/
+experiment/mel_cache_anura/
+experiment/mel_cache_bc2021/
+experiment/mel_cache_bc2022/
+experiment/mel_cache_bc2023/
+experiment/mel_cache_bc2024/
+experiment/mel_cache_bc2025/
+experiment/mel_cache_inat/
+experiment/sonotype_viz/
+
+# === Outputs (ckpts, predictions, logs) ===
+experiment/*/output/
+experiment/exp014/notebook/_precompute_log/
+eval_r1/audio/
+
+# === Model checkpoints (regenerable from Kaggle Dataset) ===
+*.pth
+*.onnx
+*.pt
+*.bin
+*.safetensors
+*.h5
+*.ckpt
+*.npy
+*.npz
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# === Claude internal ===
+.claude/
+
+# === Credentials / secrets ===
+.kaggle/
+kaggle.json
+.mcp.json
+.env
+*.key
+*.pem
+
+# === IDE ===
+.vscode/
+.idea/
+
+# === Temp ===
+tmp_*
+*.tmp
+*.log

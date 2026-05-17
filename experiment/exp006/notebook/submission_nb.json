@@ -1,0 +1,71 @@
+{
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.12.12"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4,
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": "# exp006: SED Submission (Phase 3 Retrained)\n\nEfficientNet-B0 (ns_jft_in1k) + GEM Pooling + AttentionSEDHead\nPhase 3 (pseudo label retrain) の最終重みで test_soundscapes を推論\n\n**Input Dataset**: `birdclef2026-exp006-weights` (best_fold0.pth)\n**実行環境**: Kaggle Notebook (CPU)"
+  },
+  {
+   "cell_type": "code",
+   "metadata": {},
+   "source": "import numpy as np\nimport pandas as pd\nimport librosa\nimport torch\nimport torch.nn as nn\nimport torch.nn.functional as F\nimport torchvision\nimport timm\nimport torchaudio.transforms as T\nimport os, time, glob\nfrom pathlib import Path\nfrom dataclasses import dataclass\nfrom concurrent.futures import ThreadPoolExecutor\n\nSTART = time.time()\nprint(f'PyTorch {torch.__version__}')",
+   "outputs": [],
+   "execution_count": null
+  },
+  {
+   "cell_type": "code",
+   "metadata": {},
+   "source": "# ══════════════════════════════════════════════════════════════\n# CONFIG & PATHS\n# ══════════════════════════════════════════════════════════════\n@dataclass\nclass Config:\n    sr: int = 32_000\n    chunk_duration: float = 5.0\n    target_size: tuple = (256, 256)\n    n_mels: int = 256\n    n_fft: int = 2048\n    hop_length: int = 512\n    fmin: int = 0\n    fmax: int = 16_000\n    top_db: float = 80.0\n    power: float = 2.0\n    norm: str = \"slaney\"\n    mel_scale: str = \"htk\"\n    backbone: str = \"tf_efficientnet_b0.ns_jft_in1k\"\n    num_classes: int = 234\n    in_channels: int = 3\n    dropout: float = 0.1\n    drop_path_rate: float = 0.0\n    gem_p_init: float = 3.0\n\n    @property\n    def chunk_samples(self) -> int:\n        return int(self.sr * self.chunk_duration)\n\ncfg = Config()\n\nDATA_ROOT = \"/kaggle/input/competitions/birdclef-2026\"\nTEST_DIR = os.path.join(DATA_ROOT, \"test_soundscapes\")\nTRAIN_SC_DIR = os.path.join(DATA_ROOT, \"train_soundscapes\")\n\n# Try multiple possible mount paths for the checkpoint\nCHECKPOINT_CANDIDATES = [\n    \"/kaggle/input/exp006/weights/best_fold0.pth\",\n    \"/kaggle/input/datasets/maekeso/exp006/weights/best_fold0.pth\",\n]\nCHECKPOINT = None\nfor p in CHECKPOINT_CANDIDATES:\n    if os.path.isfile(p):\n        CHECKPOINT = p\n        break\nif CHECKPOINT is None:\n    import subprocess\n    print(\"=== /kaggle/input contents ===\")\n    result = subprocess.run([\"find\", \"/kaggle/input\", \"-maxdepth\", \"3\", \"-type\", \"f\"],\n                            capture_output=True, text=True, timeout=10)\n    print(result.stdout[:3000])\n    raise FileNotFoundError(f\"Checkpoint not found in any of: {CHECKPOINT_CANDIDATES}\")\n\nprint(f\"Checkpoint: {CHECKPOINT}\")\n\nsub_df = pd.read_csv(os.path.join(DATA_ROOT, \"sample_submission.csv\"), nrows=1)\nSPECIES = list(sub_df.columns[1:])\nprint(f\"Species: {len(SPECIES)}\")",
+   "outputs": [],
+   "execution_count": null
+  },
+  {
+   "cell_type": "code",
+   "metadata": {},
+   "source": "# ══════════════════════════════════════════════════════════════\n# MODEL DEFINITION (must match training)\n# ══════════════════════════════════════════════════════════════\nclass GEMFreqPool(nn.Module):\n    def __init__(self, p_init=3.0, eps=1e-6):\n        super().__init__()\n        self.p = nn.Parameter(torch.tensor(p_init))\n        self.eps = eps\n\n    def forward(self, x):\n        p = self.p.clamp(min=1.0)\n        x = x.clamp(min=self.eps).pow(p)\n        x = x.mean(dim=2)\n        return x.pow(1.0 / p)\n\nclass AttentionSEDHead(nn.Module):\n    def __init__(self, feat_dim, num_classes, dropout=0.1):\n        super().__init__()\n        self.fc = nn.Sequential(\n            nn.Linear(feat_dim, feat_dim),\n            nn.ReLU(inplace=True),\n            nn.Dropout(dropout),\n        )\n        self.att_conv = nn.Conv1d(feat_dim, num_classes, kernel_size=1)\n        self.cls_conv = nn.Conv1d(feat_dim, num_classes, kernel_size=1)\n\n    def forward(self, x):\n        x = self.fc(x.permute(0, 2, 1)).permute(0, 2, 1)\n        att = F.softmax(torch.tanh(self.att_conv(x)), dim=-1)\n        cls = self.cls_conv(x)\n        clipwise_logit = (att * cls).sum(dim=-1)\n        return {\n            \"clipwise_prob\": torch.sigmoid(clipwise_logit),\n            \"segmentwise_logit\": cls.permute(0, 2, 1),\n        }\n\nclass SEDModel(nn.Module):\n    def __init__(self, cfg):\n        super().__init__()\n        self.backbone = timm.create_model(\n            cfg.backbone, pretrained=False,\n            in_chans=cfg.in_channels, features_only=False,\n            global_pool=\"\", num_classes=0,\n            drop_path_rate=cfg.drop_path_rate,\n        )\n        self.gem_pool = GEMFreqPool(p_init=cfg.gem_p_init)\n        self.head = AttentionSEDHead(self.backbone.num_features,\n                                     cfg.num_classes, cfg.dropout)\n\n    def forward(self, x):\n        return self.head(self.gem_pool(self.backbone(x)))\n\n# ══════════════════════════════════════════════════════════════\n# MEL TRANSFORM\n# ══════════════════════════════════════════════════════════════\nclass MelSpectrogramTransform(nn.Module):\n    def __init__(self, cfg):\n        super().__init__()\n        self.mel = T.MelSpectrogram(\n            sample_rate=cfg.sr, n_fft=cfg.n_fft, hop_length=cfg.hop_length,\n            n_mels=cfg.n_mels, f_min=cfg.fmin, f_max=cfg.fmax,\n            power=cfg.power, norm=cfg.norm, mel_scale=cfg.mel_scale,\n        )\n        self.db = T.AmplitudeToDB(stype=\"power\", top_db=cfg.top_db)\n        self.resize = torchvision.transforms.Resize(cfg.target_size, antialias=True)\n\n    @torch.no_grad()\n    def forward(self, waveforms):\n        mel = self.db(self.mel(waveforms))\n        mel = self.resize(mel)\n        B = mel.shape[0]\n        mel_flat = mel.reshape(B, -1)\n        mel_min = mel_flat.min(dim=1, keepdim=True)[0].unsqueeze(-1)\n        mel_max = mel_flat.max(dim=1, keepdim=True)[0].unsqueeze(-1)\n        mel = (mel - mel_min) / (mel_max - mel_min + 1e-7)\n        return mel.unsqueeze(1).repeat(1, 3, 1, 1)\n\nmel_transform = MelSpectrogramTransform(cfg)\nmel_transform.eval()",
+   "outputs": [],
+   "execution_count": null
+  },
+  {
+   "cell_type": "code",
+   "metadata": {},
+   "source": "# ══════════════════════════════════════════════════════════════\n# LOAD MODEL\n# ══════════════════════════════════════════════════════════════\nmodel = SEDModel(cfg)\nckpt = torch.load(CHECKPOINT, map_location=\"cpu\", weights_only=False)\nmodel.load_state_dict(ckpt['model_state_dict'])\nmodel.eval()\nepoch = ckpt.get('epoch', '?')\nval_auc = ckpt.get('metrics', {}).get('macro_auc', '?')\nprint(f'Loaded: epoch={epoch}, val_auc={val_auc}')",
+   "outputs": [],
+   "execution_count": null
+  },
+  {
+   "cell_type": "code",
+   "metadata": {},
+   "source": "# ══════════════════════════════════════════════════════════════\n# FIND TEST FILES\n# ══════════════════════════════════════════════════════════════\ntest_files = sorted(glob.glob(os.path.join(TEST_DIR, '*.ogg')))\nif len(test_files) == 0:\n    print('No test soundscapes found, using train_soundscapes as fallback')\n    test_files = sorted(glob.glob(os.path.join(TRAIN_SC_DIR, '*.ogg')))[:8]\nprint(f'Test files: {len(test_files)}')",
+   "outputs": [],
+   "execution_count": null
+  },
+  {
+   "cell_type": "code",
+   "metadata": {},
+   "source": "# ══════════════════════════════════════════════════════════════\n# INFERENCE\n# ══════════════════════════════════════════════════════════════\ndef load_soundscape(path):\n    stem = Path(path).stem\n    y, _ = librosa.load(path, sr=cfg.sr, mono=True)\n    return y, stem\n\nprint('Loading audio files...')\nt0 = time.time()\nwith ThreadPoolExecutor(max_workers=4) as executor:\n    audio_results = list(executor.map(load_soundscape, test_files))\nprint(f'  Loaded {len(audio_results)} files in {time.time()-t0:.1f}s')\n\nCHUNK = cfg.chunk_samples\nBATCH_SIZE = 32\nall_row_ids = []\nall_preds = []\n\nprint('Running inference...')\nt0 = time.time()\n\nfor audio, stem in audio_results:\n    n_chunks = max(1, len(audio) // CHUNK)\n    padded_len = n_chunks * CHUNK\n    if len(audio) < padded_len:\n        audio = np.pad(audio, (0, padded_len - len(audio)))\n    else:\n        audio = audio[:padded_len]\n\n    peak = np.abs(audio).max()\n    if peak > 0:\n        audio = audio / peak\n\n    chunks_tensor = torch.from_numpy(audio.reshape(n_chunks, CHUNK)).float()\n\n    # Batched inference to avoid OOM on long soundscapes\n    all_chunk_probs = []\n    with torch.no_grad():\n        for bi in range(0, n_chunks, BATCH_SIZE):\n            batch = chunks_tensor[bi:bi+BATCH_SIZE]\n            mel = mel_transform(batch)\n            probs_batch = model(mel)['clipwise_prob'].numpy()\n            all_chunk_probs.append(probs_batch)\n    probs = np.concatenate(all_chunk_probs, axis=0)\n\n    for i in range(n_chunks):\n        end_sec = (i + 1) * int(cfg.chunk_duration)\n        all_row_ids.append(f'{stem}_{end_sec}')\n        all_preds.append(probs[i])\n\nelapsed = time.time() - t0\nprint(f'  Inference done: {len(all_row_ids)} predictions in {elapsed:.1f}s')",
+   "outputs": [],
+   "execution_count": null
+  },
+  {
+   "cell_type": "code",
+   "metadata": {},
+   "source": "# ══════════════════════════════════════════════════════════════\n# BUILD SUBMISSION\n# ══════════════════════════════════════════════════════════════\npreds_array = np.stack(all_preds)\nsubmission = pd.DataFrame(preds_array, columns=SPECIES)\nsubmission.insert(0, 'row_id', all_row_ids)\n\nsample_sub = pd.read_csv(os.path.join(DATA_ROOT, 'sample_submission.csv'))\nexpected_ids = set(sample_sub['row_id'])\nour_ids = set(submission['row_id'])\n\nmissing = expected_ids - our_ids\nif missing:\n    print(f'WARNING: {len(missing)} missing row_ids - filling with zeros')\n    missing_df = pd.DataFrame({'row_id': list(missing)})\n    for sp in SPECIES:\n        missing_df[sp] = 0.0\n    submission = pd.concat([submission, missing_df], ignore_index=True)\n\nextra = our_ids - expected_ids\nif extra:\n    print(f'Dropping {len(extra)} extra row_ids')\n    submission = submission[submission['row_id'].isin(expected_ids)]\n\nsubmission = submission.set_index('row_id').loc[sample_sub['row_id']].reset_index()\nsubmission.to_csv('submission.csv', index=False)\n\ntotal_time = time.time() - START\nprint(f'\\nSubmission saved: {submission.shape}')\nprint(f'Total time: {total_time:.0f}s ({total_time/60:.1f} min)')\nprint(f'Mean prediction: {submission[SPECIES].values.mean():.6f}')\nprint(f'Max prediction:  {submission[SPECIES].values.max():.6f}')\nprint(submission.head())",
+   "outputs": [],
+   "execution_count": null
+  }
+ ]
+}

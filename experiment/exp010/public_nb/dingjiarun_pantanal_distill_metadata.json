@@ -1,0 +1,33 @@
+{
+  "id": 113884841,
+  "ref": "dingjiarun/pantanal-distill-birdclef2026-onnx",
+  "title": "pantanal-distill-birdclef2026-ONNX",
+  "author": "Xie Xin",
+  "slug": "pantanal-distill-birdclef2026-onnx",
+  "last_run_time": "2026-04-14T06:10:25.251087900Z",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": false,
+  "dataset_data_sources": [
+    "",
+    "lixin73/birdclef2026-v27-onnx-perch-meta-forum-v1-lb872",
+    "jaejohn/perch-meta"
+  ],
+  "kernel_data_sources": [
+    "ashok205/tf-wheels"
+  ],
+  "competition_data_sources": [
+    "birdclef-2026"
+  ],
+  "total_votes": 567,
+  "model_data_sources": [
+    "google/bird-vocalization-classifier/TensorFlow2/perch_v2_cpu/1",
+    "google/bird-vocalization-classifier/TensorFlow2/perch_v2/2"
+  ],
+  "enable_tpu": false,
+  "current_version_number": 9,
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:9fa0da194fad2241d3f01a80581cbecbd3a258b4d1b695e2cbbbc62a0fd205ac",
+  "machine_shape": "NvidiaTeslaT4"
+}

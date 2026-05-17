@@ -1,0 +1,9 @@
+
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
+def get_cosine_restart_scheduler(optimizer, restart_period=20):
+    return CosineAnnealingWarmRestarts(
+        optimizer, T_0=restart_period, T_mult=1, eta_min=1e-5
+    )
+
+print("✅ Cosine Restart Scheduler defined")

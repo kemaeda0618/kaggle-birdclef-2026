@@ -1,0 +1,137 @@
+=== Cell 0 (markdown) ===
+# Idea: SED has no temporal context within the 12 windows. Let's strengthen the ProtoSSM weight when it predicts the same class across consecutive windows with a fat-tail distribution.
+ Looking forward to the one-parameter public notebook update improving LB in a few hours.
+
+=== Cell 1 (markdown) ===
+# BirdCLEF+ 2026: 0.941 Public LB with ONNX Perch Sequence Modeling and SED Blend
+
+This notebook documents the all-public CPU inference pipeline behind our current best confirmed BirdCLEF+ 2026 submission: **0.941 public LB**, submitted from `afr1ste/birdclef-2026-vyanktesh-sequence-v1` on 2026-05-02 UTC.
+
+The important point is not a single trick. The score comes from combining a strong Perch embedding backbone, lightweight sequence models trained inside the notebook, calibrated post-processing, and a distilled SED ensemble. The final submission is a **rank-average blend of ProtoSSM/Perch sequence predictions and Tucker Arrants' public distilled SED predictions**.
+
+## Compliance and attribution
+
+This is an annotated public write-up of an all-public Kaggle notebook workflow. It uses only competition data, Kaggle-attached public datasets/kernels/models, and offline Kaggle notebook execution. Internet is disabled. No private dataset, unreleased checkpoint, hidden test label, external scraping, or team-private code is included.
+
+Primary code lineage and public inputs:
+
+| Component | Public source |
+| --- | --- |
+| Base notebook and ONNX Perch sequence pipeline | Vyanktesh Dwivedi, `birdclef-2026-onnx-perch-sequence-modeling` |
+| Distilled SED ONNX folds | Tucker Arrants, `bc2026-distilled-sed-public` |
+| Perch metadata | Jaejohn, `perch-meta` |
+| Perch ONNX export | Rishikesh Jani, `perch-onnx-for-birdclef-2026` |
+| TensorFlow wheel helper | Ashok205, `tf-wheels` |
+| Perch model | Google Bird Vocalization Classifier, TensorFlow2 Perch v2 CPU |
+
+The added markdown is meant to make the method auditable and easier to learn from. If you fork or reuse this notebook, please keep the same attribution chain visible.
+
+## High-level pipeline
+
+1. Load BirdCLEF taxonomy, sample submission, and train soundscape metadata.
+2. Use the Perch model, preferably through ONNX Runtime, to produce window-level logits and embeddings.
+3. Build train-window labels and lightweight sequence learn
+
+=== Cell 2 (code) ===
+# ── Cell 0: Install ONNX Runtime + TF 2.20 ────────────────────────────
+import subprocess, sys, os
+from pathlib import Path
+
+INPUT_ROOT = Path("/kaggle/input")
+
+def find_wheel(pattern):
+    for p in INPUT_ROOT.rglob(pattern):
+        return p
+    raise FileNotFoundError(pattern)
+
+# Try ONNX first (150x faster than TF SavedModel)
+ONNX_WHL = Path("/kaggle/input/datasets/rishikeshjani/perch-onnx-for-birdclef-2026/onnxruntime-1.24.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl")
+if ONNX_WHL.exists():
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", str(ONNX_WHL)], check=True)
+    print("ONNX Runtime installed")
+
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps",
+                str(find_wheel("tensorboard-2.20.0-*.whl"))], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps",
+                str(find_wheel("tensorflow-2.20.0-*.whl"))], check=True)
+print("TF 2.20 installed")
+
+try:
+    import onnxruntime as ort
+    _ONNX_AVAILABLE = True
+    print("ONNX Runtime available ✅")
+except ImportError:
+    _ONNX_AVAILABLE = False
+    print("ONNX not available, falling back to TF")
+
+=== Cell 3 (code) ===
+# ── Cell 1: Mode switch ────────────────────────────────────────────────
+MODE = "submit"   # ← change to "train" for local CV
+ 
+assert MODE in {"train", "submit"}
+print("MODE =", MODE)
+
+=== Cell 4 (markdown) ===
+## Configuration
+
+The notebook is configured for Kaggle code-competition inference. In submit mode it skips expensive OOF reporting and focuses on producing `submission.csv` under the hidden `test_soundscapes` mount. When hidden test files are absent, the notebook runs a dry-run on train soundscape files so we can validate shape, NaNs, and timing.
+
+Two details matter for reproducibility:
+
+- `enable_internet` is disabled in kernel metadata, so every dependency must be attached as a Kaggle input.
+- The pipeline runs on CPU. ONNX Runtime is used because it is much faster and more stable for this Perch inference path than a full TensorFlow-only route.
+
+
+=== Cell 6 (markdown) ===
+## Data and Label Setup
+
+The competition target has 234 scored classes. The notebook reads `taxonomy.csv` and `sample_submission.csv`, then constructs the row/column order required by Kaggle. It also parses train soundscape labels for the internal dry-run and for building sequence-model training targets.
+
+The hidden test set is not available during ordinary public execution. This is expected for a Kaggle code competition: the same notebook will see real `test_soundscapes` only when Kaggle reruns it as a formal competition submission.
+
+
+=== Cell 8 (markdown) ===
+## Perch Backbone
+
+Perch provides strong acoustic embeddings and class logits. The notebook prefers an attached ONNX export for speed, while still keeping the Kaggle TensorFlow Perch model available. In our submitted run, ONNX Perch was used and the train cache was built in roughly 2.5 minutes.
+
+A useful implementation detail is the species mapping step. Most target classes map directly to Perch logits; a few unmapped targets can borrow genus-level proxy signal; the remaining unmapped species are handled by the downstream learned and prior components rather than by direct Perch logits.
+
+
+=== Cell 9 (code) ===
+# ── Cell 4: Load Perch model (ONNX preferred) ─────────────────────────
+birdclassifier = tf.saved_model.load(str(MODEL_DIR))
+infer_fn       = birdclassifier.signatures["serving_default"]
+
+# ONNX session (150x faster)
+ONNX_PERCH_PATH = Path("/kaggle/input/datasets/rishikeshjani/perch-onnx-for-birdclef-2026/perch_v2.onnx")
+USE_ONNX = _ONNX_AVAILABLE and ONNX_PERCH_PATH.exists()
+
+if USE_ONNX:
+    _so = ort.SessionOptions()
+    _so.intra_op_num_threads = 4
+    ONNX_SESSION    = ort.InferenceSession(str(ONNX_PERCH_PATH), sess_options=_so,
+                                            providers=["CPUExecutionProvider"])
+    ONNX_INPUT_NAME = ONNX_SESSION.get_inputs()[0].name
+    ONNX_OUT_MAP    = {o.name: i for i, o in enumerate(ONNX_SESSION.get_outputs())}
+    print("Using ONNX Perch (150x faster)")
+else:
+    print("Using TF SavedModel Perch")
+
+bc_labels = (pd.read_csv(MODEL_DIR / "assets" / "labels.csv")
+             .reset_index()
+             .rename(columns={"index": "bc_index", "inat2024_fsd50k": "scientific_name"}))
+NO_LABEL = len(bc_labels)
+
+mapping = (taxonomy
+           .merge(bc_labels.rename(columns={"scientific_name": "scientific_name"}),
+                  on="scientific_name", how="left"))
+mapping["bc_index"] = mapping["bc_index"].fillna(NO_LABEL).astype(int)
+lbl2bc = mapping.set_index("primary_label")["bc_index"]
+
+BC_INDICES    = np.array([int(lbl2bc.loc[c]) for c in PRIMARY_LABELS], dtype=np.int32)
+MAPPED_MASK   = BC_INDICES != NO_LABEL
+MAPPED_POS    = np.where(MAPPED_MASK)[0].astype(np.int32)
+MAPPED_BC_IDX = BC_INDICES[MAPPED_MASK].astype(np.int32)
+
+print(f"Mapped: {MAPPED_MASK.sum()} / {N_CLASSES} species have a Perch logit")

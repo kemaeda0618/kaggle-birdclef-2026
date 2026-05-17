@@ -1,0 +1,17 @@
+# --- Build submission ---
+submission = pd.DataFrame(probs, columns=PRIMARY_LABELS)
+submission.insert(0, "row_id", meta_test["row_id"].values)
+submission[PRIMARY_LABELS] = submission[PRIMARY_LABELS].astype(np.float32)
+
+expected_rows = len(test_paths) * N_WINDOWS
+assert len(submission) == expected_rows, f"Expected {expected_rows}, got {len(submission)}"
+assert submission.columns.tolist() == ["row_id"] + PRIMARY_LABELS
+assert not submission.isna().any().any()
+
+submission.to_csv("submission.csv", index=False)
+
+print("\nSaved submission.csv")
+print("Submission shape:", submission.shape)
+print(f"Final score range: {probs.min():.6f} to {probs.max():.6f}")
+print(f"Final mean: {probs.mean():.4f}")
+print(submission.iloc[:3, :8])

@@ -1,0 +1,40 @@
+# ── STEP 5: Isotonic Calibration + Threshold Optimization ──
+from sklearn.isotonic import IsotonicRegression
+
+def calibrate_and_optimize_thresholds(oof_probs, Y_FULL, 
+                                       threshold_grid, n_windows=12):
+    n_samples, n_cls = oof_probs.shape
+    thresholds = np.full(n_cls, 0.5, dtype=np.float32)
+    n_files  = n_samples // n_windows
+    file_oof = oof_probs.reshape(n_files, n_windows, n_cls).max(axis=1)
+    file_y   = Y_FULL.reshape(n_files, n_windows, n_cls).max(axis=1)
+
+    for c in range(n_cls):
+        y_true, y_prob = file_y[:, c], file_oof[:, c]
+        if y_true.sum() < 3:
+            continue
+        try:
+            ir = IsotonicRegression(out_of_bounds="clip")
+            ir.fit(y_prob, y_true)
+            y_cal = ir.transform(y_prob)
+        except:
+            y_cal = y_prob
+
+        best_f1, best_t = 0.0, 0.5
+        for t in threshold_grid:
+            pred = (y_cal >= t).astype(int)
+            tp = ((pred==1)&(y_true==1)).sum()
+            fp = ((pred==1)&(y_true==0)).sum()
+            fn = ((pred==0)&(y_true==1)).sum()
+            prec = tp/(tp+fp+1e-8)
+            rec  = tp/(tp+fn+1e-8)
+            f1   = 2*prec*rec/(prec+rec+1e-8)
+            if f1 > best_f1:
+                best_f1, best_t = f1, t
+        thresholds[c] = best_t
+
+    print(f"Mean threshold: {thresholds.mean():.3f}")
+    print(f"Range: [{thresholds.min():.2f}, {thresholds.max():.2f}]")
+    return thresholds
+
+print("✅ Calibration + Threshold function defined")

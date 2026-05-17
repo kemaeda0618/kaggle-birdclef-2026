@@ -1,0 +1,83 @@
+# Cell 5 — Perch inference with embeddings + selective proxies
+def read_soundscape_60s(path):
+    y, sr = sf.read(path, dtype="float32", always_2d=False)
+    if y.ndim == 2:
+        y = y.mean(axis=1)
+    if sr != SR:
+        raise ValueError(f"Unexpected sample rate {sr} in {path}; expected {SR}")
+    if len(y) < FILE_SAMPLES:
+        y = np.pad(y, (0, FILE_SAMPLES - len(y)))
+    elif len(y) > FILE_SAMPLES:
+        y = y[:FILE_SAMPLES]
+    return y
+
+def infer_perch_with_embeddings(paths, batch_files=16, verbose=True, proxy_reduce="max"):
+    paths = [Path(p) for p in paths]
+    n_files = len(paths)
+    n_rows = n_files * N_WINDOWS
+
+    row_ids = np.empty(n_rows, dtype=object)
+    filenames = np.empty(n_rows, dtype=object)
+    sites = np.empty(n_rows, dtype=object)
+    hours = np.empty(n_rows, dtype=np.int16)
+
+    scores = np.zeros((n_rows, N_CLASSES), dtype=np.float32)
+    embeddings = np.zeros((n_rows, 1536), dtype=np.float32)
+
+    write_row = 0
+    iterator = range(0, n_files, batch_files)
+    if verbose:
+        iterator = tqdm(iterator, total=(n_files + batch_files - 1) // batch_files, desc="Perch batches")
+
+    for start in iterator:
+        batch_paths = paths[start:start + batch_files]
+        batch_n = len(batch_paths)
+
+        x = np.empty((batch_n * N_WINDOWS, WINDOW_SAMPLES), dtype=np.float32)
+        batch_row_start = write_row
+        x_pos = 0
+
+        for path in batch_paths:
+            y = read_soundscape_60s(path)
+            x[x_pos:x_pos + N_WINDOWS] = y.reshape(N_WINDOWS, WINDOW_SAMPLES)
+
+            meta = parse_soundscape_filename(path.name)
+            stem = path.stem
+
+            row_ids[write_row:write_row + N_WINDOWS] = [f"{stem}_{t}" for t in range(5, 65, 5)]
+            filenames[write_row:write_row + N_WINDOWS] = path.name
+            sites[write_row:write_row + N_WINDOWS] = meta["site"]
+            hours[write_row:write_row + N_WINDOWS] = int(meta["hour_utc"])
+
+            x_pos += N_WINDOWS
+            write_row += N_WINDOWS
+
+        outputs = infer_fn(inputs=tf.convert_to_tensor(x))
+        logits = outputs["label"].numpy().astype(np.float32, copy=False)
+        emb = outputs["embedding"].numpy().astype(np.float32, copy=False)
+
+        scores[batch_row_start:write_row, MAPPED_POS] = logits[:, MAPPED_BC_INDICES]
+        embeddings[batch_row_start:write_row] = emb
+
+        # Selected frog proxies
+        for pos, bc_idx_arr in selected_proxy_pos_to_bc.items():
+            sub = logits[:, bc_idx_arr]
+            if proxy_reduce == "max":
+                proxy_score = sub.max(axis=1)
+            elif proxy_reduce == "mean":
+                proxy_score = sub.mean(axis=1)
+            else:
+                raise ValueError("proxy_reduce must be 'max' or 'mean'")
+            scores[batch_row_start:write_row, pos] = proxy_score.astype(np.float32)
+
+        del x, outputs, logits, emb
+        gc.collect()
+
+    meta_df = pd.DataFrame({
+        "row_id": row_ids,
+        "filename": filenames,
+        "site": sites,
+        "hour_utc": hours,
+    })
+
+    return meta_df, scores, embeddings

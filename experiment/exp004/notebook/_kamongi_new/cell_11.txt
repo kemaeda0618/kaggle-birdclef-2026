@@ -1,0 +1,53 @@
+CODE CELL 11
+================================================================================
+
+# Cell 4 — Metrics and helper utilities
+def macro_auc_skip_empty(y_true, y_score):
+    keep = y_true.sum(axis=0) > 0
+    return roc_auc_score(y_true[:, keep], y_score[:, keep], average="macro")
+
+def smooth_cols_fixed12(scores, cols, alpha=0.35):
+    if alpha <= 0 or len(cols) == 0:
+        return scores.copy()
+
+    s = scores.copy()
+    assert len(s) % N_WINDOWS == 0, "Expected full-file blocks of 12 windows"
+    view = s.reshape(-1, N_WINDOWS, s.shape[1])
+
+    x = view[:, :, cols]
+    prev_x = np.concatenate([x[:, :1, :], x[:, :-1, :]], axis=1)
+    next_x = np.concatenate([x[:, 1:, :], x[:, -1:, :]], axis=1)
+
+    view[:, :, cols] = (1.0 - alpha) * x + 0.5 * alpha * (prev_x + next_x)
+    return s
+
+def smooth_events_fixed12(scores, cols, alpha=0.15):
+    """Soft max-pool context for event birds (Aves).
+    Uses local_max instead of average neighbor, preserving transient call detection."""
+    if alpha <= 0 or len(cols) == 0:
+        return scores.copy()
+    s = scores.copy()
+    assert len(s) % N_WINDOWS == 0
+    view = s.reshape(-1, N_WINDOWS, s.shape[1])
+    x = view[:, :, cols]
+    prev_x = np.concatenate([x[:, :1, :], x[:, :-1, :]], axis=1)
+    next_x = np.concatenate([x[:, 1:, :], x[:, -1:, :]], axis=1)
+    local_max = np.maximum(x, np.maximum(prev_x, next_x))
+    view[:, :, cols] = (1.0 - alpha) * x + alpha * local_max
+    return s
+
+def seq_features_1d(v):
+    """
+    v: shape (n_rows,), ordered as full-file blocks of 12 windows
+    Extended: tambah std_v untuk capture variance temporal dalam file
+    """
+    assert len(v) % N_WINDOWS == 0, "Expected full-file blocks of 12 windows"
+    x = v.reshape(-1, N_WINDOWS)
+
+    prev_v = np.concatenate([x[:, :1], x[:, :-1]], axis=1).reshape(-1)
+    next_v = np.concatenate([x[:, 1:], x[:, -1:]], axis=1).reshape(-1)
+    mean_v = np.repeat(x.mean(axis=1), N_WINDOWS)
+    max_v  = np.repeat(x.max(axis=1),  N_WINDOWS)
+    std_v  = np.repeat(x.std(axis=1),  N_WINDOWS)
+
+    return prev_v, next_v, mean_v, max_v, std_v

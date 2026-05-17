@@ -1,0 +1,5 @@
+MARKDOWN CELL 40
+================================================================================
+
+## Score Fusion -- ProtoSSM v2 + MLP Ensemble
+Combine ProtoSSM v2 temporal predictions with MLP probe scores using OOF-optimized ensemble weight. Includes metadata-aware inference and comprehensive diagnostics.

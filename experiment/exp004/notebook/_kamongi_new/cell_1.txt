@@ -1,0 +1,6 @@
+CODE CELL 1
+================================================================================
+
+# Cell 0 — Install TF 2.20 (required for Perch v2 StableHLO compatibility)
+!pip install -q --no-deps /kaggle/input/tensorflow-2-20-wheels/tensorboard-2.20.0-py3-none-any.whl
+!pip install -q --no-deps /kaggle/input/tensorflow-2-20-wheels/tensorflow-2.20.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl

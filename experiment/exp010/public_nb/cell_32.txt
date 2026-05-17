@@ -1,0 +1,2 @@
+## ProtoSSM v2 Training
+Multi-task training with species BCE loss (label smoothing), prototypical contrastive loss, knowledge distillation from Perch logits, and taxonomic auxiliary loss. Includes 5-fold GroupKFold OOF cross-validation and ensemble weight optimization.

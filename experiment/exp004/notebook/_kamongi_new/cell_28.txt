@@ -1,0 +1,79 @@
+CODE CELL 28
+================================================================================
+
+# Cell 10 — Probe tuning (train mode only)
+grid_results = None
+BEST_PROBE = None
+
+if CFG["run_probe_check"]:
+    probe_result = run_oof_embedding_probe(
+        scores_raw=scores_full_raw,
+        emb=emb_full,
+        meta_df=meta_full,
+        y_true=Y_FULL,
+        pca_dim=64,
+        min_pos=8,
+        C=0.25,
+        alpha=0.5,
+    )
+
+    print(f"Honest OOF baseline AUC: {probe_result['score_base']:.6f}")
+    print(f"Honest OOF embedding-probe AUC: {probe_result['score_final']:.6f}")
+    print(f"Delta: {probe_result['score_final'] - probe_result['score_base']:.6f}")
+
+    modeled_classes = np.where(probe_result["modeled_counts"] > 0)[0]
+    print("Modeled classes:", len(modeled_classes))
+    print([PRIMARY_LABELS[i] for i in modeled_classes[:20]])
+
+if CFG["run_probe_grid"]:
+    param_grid = [
+        {"pca_dim": 32, "min_pos": 8,  "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 64, "min_pos": 8,  "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 64, "min_pos": 8,  "C": 0.25, "alpha": 0.5},
+        {"pca_dim": 64, "min_pos": 12, "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 96, "min_pos": 8,  "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 64, "min_pos": 8,  "C": 0.50, "alpha": 0.4},
+    ]
+
+    results = []
+    for params in tqdm(param_grid, desc="Probe grid", disable=not CFG["verbose"]):
+        out = run_oof_embedding_probe(
+            scores_raw=scores_full_raw,
+            emb=emb_full,
+            meta_df=meta_full,
+            y_true=Y_FULL,
+            pca_dim=params["pca_dim"],
+            min_pos=params["min_pos"],
+            C=params["C"],
+            alpha=params["alpha"],
+        )
+        results.append({
+            **params,
+            "baseline_oof_auc": out["score_base"],
+            "probe_oof_auc": out["score_final"],
+            "delta": out["score_final"] - out["score_base"],
+            "n_modeled_classes": int((out["modeled_counts"] > 0).sum()),
+        })
+
+    grid_results = pd.DataFrame(results).sort_values("probe_oof_auc", ascending=False).reset_index(drop=True)
+    display(grid_results)
+
+    BEST_PROBE = {
+        "pca_dim": int(grid_results.iloc[0]["pca_dim"]),
+        "min_pos": int(grid_results.iloc[0]["min_pos"]),
+        "C": float(grid_results.iloc[0]["C"]),
+        "alpha": float(grid_results.iloc[0]["alpha"]),
+    }
+
+    # Save best params for future freezing
+    best_probe_path = CFG["full_cache_work_dir"] / "best_probe_params.json"
+    best_probe_path.write_text(json.dumps(BEST_PROBE, indent=2))
+    print("Saved best probe params to:", best_probe_path)
+
+else:
+    BEST_PROBE = CFG["frozen_best_probe"]
+    print("Using frozen BEST_PROBE in submit mode:")
+    print(BEST_PROBE)
+
+if grid_results is not None:
+    grid_results.to_csv(CFG["full_cache_work_dir"] / "probe_grid_results.csv", index=False)

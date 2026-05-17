@@ -1,0 +1,7 @@
+MARKDOWN CELL 35
+================================================================================
+
+## Residual SSM -- Second-Pass Boosting
+Train a lightweight SSM on the residuals (errors) of the first-pass ProtoSSM + MLP ensemble.
+The residual model learns systematic correction patterns: species that are consistently
+over/under-predicted, temporal error patterns, and site-specific biases.

@@ -1,0 +1,84 @@
+=== Cell 0 (markdown) ===
+---
+
+# ~ BirdCLEF 2026: Perch Embedding Probe ~
+*Wildlife species identification from Pantanal soundscapes*
+
+---
+
+=== Cell 1 (markdown) ===
+## Table of Contents
+
+1. [**Introduction**](#1)
+2. [**Initialization**](#2)
+3. [**Data Loading**](#3)
+4. [**Perch Label Mapping**](#4)
+5. [**Perch Inference**](#5)
+6. [**Prior Fusion**](#6)
+7. [**Out-of-Fold Meta-features**](#7)
+8. [**Embedding Probes**](#8)
+9. [**Test Inference**](#9)
+10. [**Submission**](#10)
+
+=== Cell 2 (markdown) ===
+---
+
+# Introduction <a name="1"></a>
+
+---
+
+=== Cell 3 (markdown) ===
+**BirdCLEF 2026** is a multi-label classification task: identify 234 wildlife species from 5-second segments of passive acoustic recordings in Brazil's Pantanal wetlands. Performance is measured by macro-averaged ROC-AUC over species that have at least one positive in the test ground truth. The submission notebook must run CPU-only within 90 minutes and without internet access.
+
+=== Cell 4 (markdown) ===
+---
+
+## Approach
+
+Google's **Perch v2** serves as a frozen feature extractor. No fine-tuning is performed; the 59 fully-labeled soundscape files provide enough signal to train lightweight linear probes on frozen embeddings in a few minutes on CPU.
+
+```
+Perch v2 (frozen)
+    |
+    +-- raw logits (234 classes, mapped from Perch's 14k-class vocab)
+    |        |
+    |        +-- site x hour Bayesian prior fusion
+    |                 |
+    |                 v
+    |            fused logits  (base scores)
+    |
+    +-- 1536-dim embeddings
+             |
+             v
+         PCA (64 dims) + per-class LogisticRegression probes
+             |
+             v
+         final = 0.6 * base + 0.4 * probe -> sigmoid -> submission.csv
+```
+
+=== Cell 5 (markdown) ===
+---
+
+## Reference Shoutouts
+
+- [Perch v2 Starter: Train + Infer](https://www.kaggle.com/code/jaejohn/perch-v2-starter-train-infer) by jaejohn
+- [bc26-tensorflow-2-20-0](https://www.kaggle.com/datasets/kdmitrie/bc26-tensorflow-2-20-0) by kdmitrie
+
+=== Cell 6 (markdown) ===
+---
+
+# Initialization <a name="2"></a>
+
+---
+
+=== Cell 7 (markdown) ===
+The runtime environment is configured by installing TensorFlow 2.20, loading all libraries, and defining a single `Settings` class that centralises every path and hyperparameter. The random seed is fixed for reproducibility.
+
+=== Cell 8 (markdown) ===
+## Environment
+
+=== Cell 9 (code) ===
+import os, platform, sys
+print('Python :', sys.version)
+print('OS     :', platform.system(), platform.release())
+print('CWD    :', os.getcwd())

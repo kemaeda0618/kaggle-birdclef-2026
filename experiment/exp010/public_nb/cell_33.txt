@@ -1,0 +1,391 @@
+# ProtoSSM v4 Training Loop — with Mixup, Focal Loss, SWA
+
+def build_taxonomy_groups(taxonomy_df, primary_labels):
+    for col in ["family", "order", "class_name"]:
+        if col in taxonomy_df.columns:
+            group_map = taxonomy_df.set_index("primary_label")[col].to_dict()
+            break
+    else:
+        group_map = {label: "Unknown" for label in primary_labels}
+
+    groups = sorted(set(group_map.values()))
+    grp_to_idx = {g: i for i, g in enumerate(groups)}
+    class_to_group = []
+    for label in primary_labels:
+        grp = group_map.get(label, "Unknown")
+        class_to_group.append(grp_to_idx.get(grp, 0))
+    return len(groups), class_to_group, grp_to_idx
+
+
+def build_site_mapping(meta_df):
+    sites = meta_df["site"].unique().tolist()
+    site_to_idx = {s: i + 1 for i, s in enumerate(sites)}
+    n_sites = len(sites) + 1
+    return site_to_idx, n_sites
+
+
+def reshape_to_files(flat_array, meta_df, n_windows=N_WINDOWS):
+    filenames = meta_df["filename"].to_numpy()
+    unique_files = []
+    seen = set()
+    for f in filenames:
+        if f not in seen:
+            unique_files.append(f)
+            seen.add(f)
+
+    n_files = len(unique_files)
+    assert len(flat_array) == n_files * n_windows, \
+        f"Expected {n_files * n_windows} rows, got {len(flat_array)}"
+
+    new_shape = (n_files, n_windows) + flat_array.shape[1:]
+    return flat_array.reshape(new_shape), unique_files
+
+
+def get_file_metadata(meta_df, file_list, site_to_idx, n_sites_max):
+    file_to_row = {}
+    filenames = meta_df["filename"].to_numpy()
+    sites = meta_df["site"].to_numpy()
+    hours = meta_df["hour_utc"].to_numpy()
+    for i, f in enumerate(filenames):
+        if f not in file_to_row:
+            file_to_row[f] = i
+
+    site_ids = np.zeros(len(file_list), dtype=np.int64)
+    hour_ids = np.zeros(len(file_list), dtype=np.int64)
+    for fi, fname in enumerate(file_list):
+        row = file_to_row.get(fname)
+        if row is not None:
+            sid = site_to_idx.get(sites[row], 0)
+            site_ids[fi] = min(sid, n_sites_max - 1)
+            hour_ids[fi] = int(hours[row]) % 24
+    return site_ids, hour_ids
+
+
+def mixup_files(emb, logits, labels, site_ids, hours, families, alpha=0.3):
+    """File-level mixup augmentation for ProtoSSM training.
+    Mixes pairs of files with random lambda from Beta(alpha, alpha).
+    Returns augmented versions of all inputs."""
+    n = len(emb)
+    if alpha <= 0 or n < 2:
+        return emb, logits, labels, site_ids, hours, families
+    
+    lam = np.random.beta(alpha, alpha)
+    lam = max(lam, 1.0 - lam)  # Ensure lam >= 0.5 (dominant sample stays dominant)
+    
+    perm = np.random.permutation(n)
+    
+    emb_mix = lam * emb + (1 - lam) * emb[perm]
+    logits_mix = lam * logits + (1 - lam) * logits[perm]
+    labels_mix = lam * labels + (1 - lam) * labels[perm]
+    
+    # For discrete features (site, hour), keep the dominant sample's values
+    families_mix = lam * families + (1 - lam) * families[perm] if families is not None else None
+    
+    return emb_mix, logits_mix, labels_mix, site_ids, hours, families_mix
+
+
+def train_proto_ssm_single(model, emb_train, logits_train, labels_train,
+                           site_ids_train=None, hours_train=None,
+                           emb_val=None, logits_val=None, labels_val=None,
+                           site_ids_val=None, hours_val=None,
+                           file_families_train=None, file_families_val=None,
+                           cfg=None, verbose=True):
+    """Train a single ProtoSSM v4 model with mixup, focal loss, and SWA."""
+    if cfg is None:
+        cfg = CFG["proto_ssm_train"]
+
+    label_smoothing = cfg.get("label_smoothing", 0.0)
+    mixup_alpha = cfg.get("mixup_alpha", 0.0)
+    focal_gamma = cfg.get("focal_gamma", 0.0)
+    swa_start_frac = cfg.get("swa_start_frac", 1.0)  # 1.0 = disabled
+    n_epochs = cfg["n_epochs"]
+    swa_start_epoch = int(n_epochs * swa_start_frac)
+
+    # Convert to tensors (base — unmixed)
+    labels_np = labels_train.copy()
+    
+    # Apply label smoothing
+    if label_smoothing > 0:
+        labels_np = labels_np * (1.0 - label_smoothing) + label_smoothing / 2.0
+
+    has_val = emb_val is not None
+    # if has_val:
+    #     emb_v = torch.tensor(emb_val, dtype=torch.float32)
+    #     logits_v = torch.tensor(logits_val, dtype=torch.float32)
+    #     labels_v = torch.tensor(labels_val, dtype=torch.float32)
+    #     site_v = torch.tensor(site_ids_val, dtype=torch.long) if site_ids_val is not None else None
+    #     hour_v = torch.tensor(hours_val, dtype=torch.long) if hours_val is not None else None
+
+    # fam_v = torch.tensor(file_families_val, dtype=torch.float32) if (has_val and file_families_val is not None) else None
+
+    # # Class weights for imbalanced data
+    # labels_tr_t = torch.tensor(labels_np, dtype=torch.float32)
+    if has_val:
+        emb_v = torch.tensor(emb_val, dtype=torch.float32).to(DEVICE)
+        logits_v = torch.tensor(logits_val, dtype=torch.float32).to(DEVICE)
+        labels_v = torch.tensor(labels_val, dtype=torch.float32).to(DEVICE)
+        site_v = torch.tensor(site_ids_val, dtype=torch.long).to(DEVICE) if site_ids_val is not None else None
+        hour_v = torch.tensor(hours_val, dtype=torch.long).to(DEVICE) if hours_val is not None else None
+
+    fam_v = torch.tensor(file_families_val, dtype=torch.float32).to(DEVICE) if (has_val and file_families_val is not None) else None
+
+    # Class weights for imbalanced data
+    labels_tr_t = torch.tensor(labels_np, dtype=torch.float32).to(DEVICE)
+    pos_counts = labels_tr_t.sum(dim=(0, 1))
+    total = labels_tr_t.shape[0] * labels_tr_t.shape[1]
+    pos_weight = ((total - pos_counts) / (pos_counts + 1)).clamp(max=cfg["pos_weight_cap"])
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"]
+    )
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=cfg["lr"],
+        epochs=n_epochs, steps_per_epoch=1,
+        pct_start=0.1, anneal_strategy='cos'
+    )
+
+    best_val_loss = float('inf')
+    best_state = None
+    wait = 0
+    history = {"train_loss": [], "val_loss": [], "val_auc": []}
+
+    # SWA state accumulator
+    swa_state = None
+    swa_count = 0
+
+    for epoch in range(n_epochs):
+        # === Mixup augmentation (per-epoch re-sampling) ===
+        if mixup_alpha > 0 and epoch > 5:  # Skip mixup for first 5 epochs (warmup)
+            emb_mix, logits_mix, labels_mix, _, _, fam_mix = mixup_files(
+                emb_train, logits_train, labels_np,
+                site_ids_train, hours_train, file_families_train,
+                alpha=mixup_alpha,
+            )
+        else:
+            emb_mix, logits_mix, labels_mix = emb_train, logits_train, labels_np
+            fam_mix = file_families_train
+        
+        emb_tr = torch.tensor(emb_mix, dtype=torch.float32).to(DEVICE)
+        logits_tr = torch.tensor(logits_mix, dtype=torch.float32).to(DEVICE)
+        labels_tr = torch.tensor(labels_mix, dtype=torch.float32).to(DEVICE)
+        site_tr = torch.tensor(site_ids_train, dtype=torch.long).to(DEVICE) if site_ids_train is not None else None
+        hour_tr = torch.tensor(hours_train, dtype=torch.long).to(DEVICE) if hours_train is not None else None
+        fam_tr = torch.tensor(fam_mix, dtype=torch.float32).to(DEVICE) if fam_mix is not None else None
+        # emb_tr = torch.tensor(emb_mix, dtype=torch.float32)
+        # logits_tr = torch.tensor(logits_mix, dtype=torch.float32)
+        # labels_tr = torch.tensor(labels_mix, dtype=torch.float32)
+        # site_tr = torch.tensor(site_ids_train, dtype=torch.long) if site_ids_train is not None else None
+        # hour_tr = torch.tensor(hours_train, dtype=torch.long) if hours_train is not None else None
+        # fam_tr = torch.tensor(fam_mix, dtype=torch.float32) if fam_mix is not None else None
+
+        # === Train ===
+        model.train()
+        species_out, family_out, _ = model(emb_tr, logits_tr, site_ids=site_tr, hours=hour_tr)
+
+        # Primary loss: focal BCE or weighted BCE
+        if focal_gamma > 0:
+            loss_main = focal_bce_with_logits(
+                species_out, labels_tr,
+                gamma=focal_gamma,
+                pos_weight=pos_weight[None, None, :],
+            )
+        else:
+            loss_main = F.binary_cross_entropy_with_logits(
+                species_out, labels_tr,
+                pos_weight=pos_weight[None, None, :]
+            )
+
+        # Knowledge distillation loss
+        loss_distill = F.mse_loss(species_out, logits_tr)
+
+        # Total loss
+        loss = loss_main + cfg["distill_weight"] * loss_distill
+
+        # Taxonomic auxiliary loss
+        if family_out is not None and fam_tr is not None:
+            loss_family = F.binary_cross_entropy_with_logits(family_out, fam_tr)
+            loss = loss + 0.1 * loss_family
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
+
+        # === SWA accumulation ===
+        if epoch >= swa_start_epoch:
+            if swa_state is None:
+                swa_state = {k: v.clone() for k, v in model.state_dict().items()}
+                swa_count = 1
+            else:
+                for k in swa_state:
+                    swa_state[k] += model.state_dict()[k]
+                swa_count += 1
+
+        # === Validate ===
+        model.eval()
+        with torch.no_grad():
+            if has_val:
+                val_out, val_fam, _ = model(emb_v, logits_v, site_ids=site_v, hours=hour_v)
+                val_loss = F.binary_cross_entropy_with_logits(
+                    val_out, labels_v,
+                    pos_weight=pos_weight[None, None, :]
+                )
+
+                val_pred = val_out.reshape(-1, val_out.shape[-1]).numpy()
+                val_true = labels_v.reshape(-1, labels_v.shape[-1]).numpy()
+                try:
+                    val_auc = macro_auc_skip_empty(val_true, val_pred)
+                except Exception:
+                    val_auc = 0.0
+            else:
+                val_loss = loss
+                val_auc = 0.0
+
+        history["train_loss"].append(loss.item())
+        history["val_loss"].append(val_loss.item())
+        history["val_auc"].append(val_auc)
+
+        if val_loss.item() < best_val_loss:
+            best_val_loss = val_loss.item()
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            wait = 0
+        else:
+            wait += 1
+
+        if verbose and (epoch + 1) % 20 == 0:
+            lr_now = optimizer.param_groups[0]['lr']
+            swa_info = f" swa={swa_count}" if swa_count > 0 else ""
+            print(f"  Epoch {epoch+1:3d}: train={loss.item():.4f} val={val_loss.item():.4f} "
+                  f"auc={val_auc:.4f} lr={lr_now:.6f} wait={wait}{swa_info}")
+
+        if wait >= cfg["patience"]:
+            if verbose:
+                print(f"  Early stopping at epoch {epoch+1} (best val_loss={best_val_loss:.4f})")
+            break
+
+    # Apply SWA if we accumulated enough checkpoints
+    if swa_state is not None and swa_count >= 3:
+        if verbose:
+            print(f"  Applying SWA (averaged {swa_count} checkpoints)")
+        avg_state = {k: v / swa_count for k, v in swa_state.items()}
+        model.load_state_dict(avg_state)
+    elif best_state is not None:
+        model.load_state_dict(best_state)
+
+    if verbose:
+        print(f"  Training complete. Best val_loss={best_val_loss:.4f}")
+        with torch.no_grad():
+            # alphas = torch.sigmoid(model.fusion_alpha).numpy()
+            alphas = torch.sigmoid(model.fusion_alpha).cpu().numpy()
+            print(f"  Fusion alpha: mean={alphas.mean():.3f} min={alphas.min():.3f} max={alphas.max():.3f}")
+            print(f"  Proto temperature: {F.softplus(model.proto_temp).item():.3f}")
+
+    return model, history
+
+
+def run_proto_ssm_oof(emb_files, logits_files, labels_files,
+                      site_ids_all, hours_all,
+                      file_families, file_groups,
+                      n_families, class_to_family,
+                      cfg=None, verbose=True):
+    """Run GroupKFold OOF cross-validation for ProtoSSM v4."""
+    if cfg is None:
+        cfg = CFG["proto_ssm_train"]
+
+    n_splits = cfg.get("oof_n_splits", 5)
+    n_files = len(emb_files)
+    ssm_cfg = CFG["proto_ssm"]
+
+    oof_preds = np.zeros((n_files, N_WINDOWS, N_CLASSES), dtype=np.float32)
+    fold_histories = []
+    fold_alphas = []
+
+    n_unique_groups = len(set(file_groups))
+    if n_unique_groups < n_splits:
+        print(f"  WARNING: Only {n_unique_groups} groups, reducing n_splits from {n_splits} to {n_unique_groups}")
+        n_splits = n_unique_groups
+    gkf = GroupKFold(n_splits=n_splits)
+    dummy_y = np.zeros(n_files)
+
+    for fold_i, (train_idx, val_idx) in enumerate(gkf.split(dummy_y, dummy_y, file_groups)):
+        if verbose:
+            print(f"\n--- Fold {fold_i+1}/{n_splits} (train={len(train_idx)}, val={len(val_idx)}) ---")
+
+        fold_model = ProtoSSMv2(
+            d_input=emb_files.shape[2],
+            d_model=ssm_cfg["d_model"],
+            d_state=ssm_cfg["d_state"],
+            n_ssm_layers=ssm_cfg["n_ssm_layers"],
+            n_classes=N_CLASSES,
+            n_windows=N_WINDOWS,
+            dropout=ssm_cfg["dropout"],
+            n_sites=ssm_cfg["n_sites"],
+            meta_dim=ssm_cfg["meta_dim"],
+            use_cross_attn=ssm_cfg.get("use_cross_attn", True),
+            cross_attn_heads=ssm_cfg.get("cross_attn_heads", 4),
+        ).to(DEVICE)
+
+        # Initialize prototypes
+        emb_flat_fold = emb_files[train_idx].reshape(-1, emb_files.shape[2])
+        labels_flat_fold = labels_files[train_idx].reshape(-1, N_CLASSES)
+        fold_model.init_prototypes_from_data(
+            torch.tensor(emb_flat_fold, dtype=torch.float32),
+            torch.tensor(labels_flat_fold, dtype=torch.float32)
+        )
+        fold_model.init_family_head(n_families, class_to_family)
+
+        # Train on fold
+        fold_model, fold_hist = train_proto_ssm_single(
+            fold_model,
+            emb_files[train_idx], logits_files[train_idx], labels_files[train_idx].astype(np.float32),
+            site_ids_train=site_ids_all[train_idx], hours_train=hours_all[train_idx],
+            emb_val=emb_files[val_idx], logits_val=logits_files[val_idx],
+            labels_val=labels_files[val_idx].astype(np.float32),
+            site_ids_val=site_ids_all[val_idx], hours_val=hours_all[val_idx],
+            file_families_train=file_families[train_idx],
+            file_families_val=file_families[val_idx],
+            cfg=cfg, verbose=verbose,
+        )
+
+        # OOF predictions with TTA
+        fold_model.eval()
+        tta_shifts = CFG.get("tta_shifts", [0])
+        if len(tta_shifts) > 1:
+            oof_preds[val_idx] = temporal_shift_tta(
+                emb_files[val_idx], logits_files[val_idx], fold_model,
+                site_ids_all[val_idx], hours_all[val_idx], shifts=tta_shifts
+            )
+        else:
+            with torch.no_grad():
+                val_emb = torch.tensor(emb_files[val_idx], dtype=torch.float32)
+                val_logits = torch.tensor(logits_files[val_idx], dtype=torch.float32)
+                val_sites = torch.tensor(site_ids_all[val_idx], dtype=torch.long)
+                val_hours = torch.tensor(hours_all[val_idx], dtype=torch.long)
+                val_out, _, _ = fold_model(val_emb, val_logits, site_ids=val_sites, hours=val_hours)
+                oof_preds[val_idx] = val_out.numpy()
+
+        fold_alphas.append(torch.sigmoid(fold_model.fusion_alpha).detach().numpy().copy())
+        fold_histories.append(fold_hist)
+
+    return oof_preds, fold_histories, fold_alphas
+
+
+def optimize_ensemble_weight(oof_proto_flat, oof_mlp_flat, y_true_flat):
+    """Grid search over blend weights to find optimal ProtoSSM ensemble weight."""
+    weights = np.arange(0.0, 1.05, 0.05)
+    results = []
+
+    for w in weights:
+        blended = w * oof_proto_flat + (1.0 - w) * oof_mlp_flat
+        try:
+            auc = macro_auc_skip_empty(y_true_flat, blended)
+        except Exception:
+            auc = 0.0
+        results.append((w, auc))
+
+    best_w, best_auc = max(results, key=lambda x: x[1])
+    return best_w, best_auc, results
+
+
+print("ProtoSSM v4 training functions defined (with mixup, focal loss, SWA, TTA).")

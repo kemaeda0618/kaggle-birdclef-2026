@@ -1,0 +1,28 @@
+{
+  "id": "chiranjithdharma/0-910-score",
+  "id_no": 112985461,
+  "title": "0.910 Score",
+  "code_file": "0-910-score.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [],
+  "dataset_sources": [
+    "jaejohn/perch-meta"
+  ],
+  "kernel_sources": [
+    "kdmitrie/bc26-tensorflow-2-20-0"
+  ],
+  "competition_sources": [
+    "birdclef-2026"
+  ],
+  "model_sources": [
+    "google/bird-vocalization-classifier/TensorFlow2/perch_v2_cpu/1",
+    "dheyeong/tf-efficientnet-b0-ns-jft-in1k/TensorFlow2/default/1"
+  ],
+  "docker_image": "gcr.io/kaggle-images/python@sha256:221c8b519c4f2efa4e712ac0f2e85878a403ea4d523a2cedf8ebf60cf1136c45",
+  "machine_shape": "None"
+}

@@ -1,0 +1,11 @@
+CODE CELL 37
+================================================================================
+
+# Cell 15 — Diagnostics
+if MODE == "train":
+    if grid_results is not None:
+        best_row = grid_results.iloc[0]
+        print(f"Best honest OOF probe AUC: {best_row['probe_oof_auc']:.6f}")
+        print(f"Delta over honest OOF baseline: {best_row['delta']:.6f}")
+else:
+    print("Skipping train diagnostics in submit mode.")

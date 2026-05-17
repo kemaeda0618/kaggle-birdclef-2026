@@ -1,0 +1,80 @@
+# Cell 18 — V17: Full post-processing pipeline
+
+# V17: Optimize per-class thresholds from OOF (train mode only)
+PER_CLASS_THRESHOLDS = np.full(N_CLASSES, 0.5, dtype=np.float32)
+if MODE == "train" and oof_proto_flat is not None:
+    print("Optimizing per-class thresholds from OOF...")
+    best_thresholds, best_scores = optimize_per_class_thresholds(
+        oof_proto_flat, Y_FULL, n_windows=N_WINDOWS, thresholds=CFG["threshold_grid"]
+    )
+    PER_CLASS_THRESHOLDS = best_thresholds.astype(np.float32)
+    print(f"  Mean threshold: {best_thresholds.mean():.3f}")
+    print(f"  Threshold range: [{best_thresholds.min():.2f}, {best_thresholds.max():.2f}]")
+    print(f"  Mean F1 (proxy): {best_scores.mean():.3f}")
+    
+    # Show classes with extreme thresholds
+    high_t = np.where(best_thresholds > 0.6)[0]
+    low_t = np.where(best_thresholds < 0.4)[0]
+    if len(high_t) > 0:
+        print(f"  High threshold classes (>0.6): {len(high_t)}")
+    if len(low_t) > 0:
+        print(f"  Low threshold classes (<0.4): {len(low_t)}")
+else:
+    # Submit mode: use default 0.5 thresholds for all classes
+    print("Using default per-class thresholds (0.5) for submit mode")
+
+
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
+
+# --- Step 1: Per-taxon temperature scaling ---
+temp_cfg = CFG["temperature"]
+T_AVES = temp_cfg["aves"]
+T_TEXTURE = temp_cfg["texture"]
+
+class_temperatures = np.ones(N_CLASSES, dtype=np.float32) * T_AVES
+for ci, label in enumerate(PRIMARY_LABELS):
+    cn = CLASS_NAME_MAP.get(label, "Aves")
+    if cn in TEXTURE_TAXA:
+        class_temperatures[ci] = T_TEXTURE
+
+print(f"\nPer-taxon temperature: Aves={T_AVES}, Texture={T_TEXTURE}")
+
+scaled_scores = final_test_scores / class_temperatures[None, :]
+probs = sigmoid(scaled_scores)
+
+# --- Step 2: File-level confidence scaling ---
+top_k = CFG.get("file_level_top_k", 0)
+if top_k > 0:
+    print(f"Applying file-level confidence scaling (top_k={top_k})")
+    probs = file_level_confidence_scale(probs, n_windows=N_WINDOWS, top_k=top_k)
+    probs = np.clip(probs, 0.0, 1.0)
+
+# --- Step 3: V17 Rank-aware post-processing ---
+if CFG.get("rank_aware_scale", False):
+    power = CFG.get("rank_aware_power", 0.5)
+    print(f"Applying rank-aware scaling (power={power})")
+    probs = rank_aware_scaling(probs, n_windows=N_WINDOWS, power=power)
+    probs = np.clip(probs, 0.0, 1.0)
+
+# --- Step 4: V17 Delta shift smoothing ---
+def adaptive_delta_smooth(probs, n_windows, base_alpha=0.20):
+    n_files = probs.shape[0] // n_windows
+    result = probs.copy()
+    view = result.reshape(n_files, n_windows, -1)
+    p_view = probs.reshape(n_files, n_windows, -1)
+    for i in range(1, n_windows - 1):
+        conf = p_view[:, i, :].max(axis=-1, keepdims=True)
+        a = base_alpha * (1.0 - conf)
+        neighbor_avg = (p_view[:, i-1, :] + p_view[:, i+1, :]) / 2.0
+        view[:, i, :] = (1.0 - a) * p_view[:, i, :] + a * neighbor_avg
+    return result.reshape(probs.shape)
+
+alpha = CFG.get("delta_shift_alpha", 0.0)
+if alpha > 0:
+    print(f"Applying delta shift smoothing (alpha={alpha})")
+    probs = adaptive_delta_smooth(probs, n_windows=N_WINDOWS, base_alpha=alpha)
+    probs = np.clip(probs, 0.0, 1.0)
+# --- Step 5: V17 Per-class threshold sharpening ---
+print(f"Applying per-class threshold sharpening...")
+probs = apply_per_class_thresholds(probs, PER_CLASS_THRESHOLDS, n_windows=N_WINDOWS)

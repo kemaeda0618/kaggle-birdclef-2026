@@ -1,0 +1,24 @@
+{
+  "id": "maekawataiki/birdclef-2026-exp004-protossm-ensemble",
+  "title": "BirdCLEF+ 2026 \u2014 exp004: ProtoSSM v2 Ensemble",
+  "code_file": "submission.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "competition_sources": [
+    "birdclef-2026"
+  ],
+  "dataset_sources": [
+    "jaejohn/perch-meta"
+  ],
+  "kernel_sources": [
+    "kdmitrie/bc26-tensorflow-2-20-0"
+  ],
+  "model_sources": [
+    "google/bird-vocalization-classifier/TensorFlow2/perch_v2_cpu/1",
+    "google/yamnet/TensorFlow2/yamnet/1"
+  ]
+}

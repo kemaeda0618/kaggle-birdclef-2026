@@ -1,0 +1,181 @@
+# Instantiate and train ProtoSSM v4
+
+# --- Step 1: Reshape to file-level ---
+emb_files, file_list = reshape_to_files(emb_full, meta_full)
+logits_files, _ = reshape_to_files(scores_full_raw, meta_full)
+labels_files, _ = reshape_to_files(Y_FULL, meta_full)
+
+print(f"Reshaped to file-level: emb={emb_files.shape}, logits={logits_files.shape}, labels={labels_files.shape}")
+print(f"Files: {len(file_list)}")
+
+# --- Step 2: Build taxonomy groups, site mapping, file metadata ---
+n_families, class_to_family, fam_to_idx = build_taxonomy_groups(taxonomy, PRIMARY_LABELS)
+print(f"Taxonomic groups: {n_families}")
+
+site_to_idx, n_sites_mapped = build_site_mapping(meta_full)
+n_sites_cfg = CFG["proto_ssm"]["n_sites"]
+print(f"Sites mapped: {n_sites_mapped} (capped to {n_sites_cfg})")
+
+site_ids_all, hours_all = get_file_metadata(meta_full, file_list, site_to_idx, n_sites_cfg)
+
+# Build per-file family labels (multi-hot)
+file_families = np.zeros((len(file_list), n_families), dtype=np.float32)
+for fi in range(len(file_list)):
+    active_classes = np.where(labels_files[fi].sum(axis=0) > 0)[0]
+    for ci in active_classes:
+        file_families[fi, class_to_family[ci]] = 1.0
+
+# --- OOF Cross-Validation (TRAIN MODE ONLY) ---
+ENSEMBLE_WEIGHT_PROTO = 0.5  # default, overridden by OOF in train mode
+oof_proto_flat = None
+fold_alphas = []
+
+if MODE == "train":
+    file_groups = np.array([f.split("_")[3] if len(f.split("_")) > 3 else f for f in file_list])
+    print(f"File groups for OOF: {len(set(file_groups))} unique groups: {sorted(set(file_groups))}")
+
+    t0_oof = time.time()
+    oof_proto_preds, fold_histories, fold_alphas = run_proto_ssm_oof(
+        emb_files, logits_files, labels_files,
+        site_ids_all, hours_all,
+        file_families, file_groups,
+        n_families, class_to_family,
+        cfg=CFG["proto_ssm_train"],
+        verbose=CFG["verbose"],
+    )
+    oof_time = time.time() - t0_oof
+    print(f"\nOOF cross-validation time: {oof_time:.1f}s")
+
+    oof_proto_flat = oof_proto_preds.reshape(-1, N_CLASSES)
+    y_flat = labels_files.reshape(-1, N_CLASSES).astype(np.float32)
+
+    per_class_auc_proto = {}
+    for ci in range(N_CLASSES):
+        if y_flat[:, ci].sum() > 0 and y_flat[:, ci].sum() < len(y_flat):
+            try:
+                per_class_auc_proto[ci] = roc_auc_score(y_flat[:, ci], oof_proto_flat[:, ci])
+            except Exception:
+                pass
+
+    overall_oof_auc_proto = macro_auc_skip_empty(y_flat, oof_proto_flat)
+    print(f"ProtoSSM OOF macro AUC: {overall_oof_auc_proto:.4f}")
+
+    LOGS["oof_auc_proto"] = overall_oof_auc_proto
+    LOGS["per_class_auc_proto"] = {PRIMARY_LABELS[k]: v for k, v in per_class_auc_proto.items()}
+    LOGS["oof_time"] = oof_time
+else:
+    print("Submit mode: skipping OOF cross-validation")
+
+# --- Train final model on ALL data ---
+ssm_cfg = CFG["proto_ssm"]
+model = ProtoSSMv2(
+    d_input=emb_full.shape[1],
+    d_model=ssm_cfg["d_model"],
+    d_state=ssm_cfg["d_state"],
+    n_ssm_layers=ssm_cfg["n_ssm_layers"],
+    n_classes=N_CLASSES,
+    n_windows=N_WINDOWS,
+    dropout=ssm_cfg["dropout"],
+    n_sites=ssm_cfg["n_sites"],
+    meta_dim=ssm_cfg["meta_dim"],
+    use_cross_attn=ssm_cfg.get("use_cross_attn", True),
+    cross_attn_heads=ssm_cfg.get("cross_attn_heads", 4),
+).to(DEVICE)
+
+emb_flat_tensor = torch.tensor(emb_full, dtype=torch.float32)
+labels_flat_tensor = torch.tensor(Y_FULL, dtype=torch.float32)
+model.init_prototypes_from_data(emb_flat_tensor, labels_flat_tensor)
+model.init_family_head(n_families, class_to_family)
+
+print(f"\nProtoSSM v4 parameters: {model.count_parameters():,}")
+
+t0_final = time.time()
+model, train_history = train_proto_ssm_single(
+    model,
+    emb_files, logits_files, labels_files.astype(np.float32),
+    site_ids_train=site_ids_all, hours_train=hours_all,
+    cfg=CFG["proto_ssm_train"],
+    verbose=True,
+)
+train_time = time.time() - t0_final
+print(f"Final model training time: {train_time:.1f}s")
+
+with torch.no_grad():
+    final_alphas = torch.sigmoid(model.fusion_alpha).numpy()
+    print(f"Fusion alpha: mean={final_alphas.mean():.4f} min={final_alphas.min():.4f} max={final_alphas.max():.4f}")
+
+# --- Train MLP probes ---
+PROBE_CLASS_IDX = np.where(Y_FULL.sum(axis=0) >= int(CFG["frozen_best_probe"]["min_pos"]))[0].astype(np.int32)
+
+probe_models = {}
+for cls_idx in tqdm(PROBE_CLASS_IDX, desc="Training MLP probes", disable=not CFG["verbose"]):
+    y = Y_FULL[:, cls_idx]
+    if y.sum() == 0 or y.sum() == len(y):
+        continue
+    X_cls = build_class_features(
+        Z_FULL,
+        raw_col=scores_full_raw[:, cls_idx],
+        prior_col=oof_prior[:, cls_idx],
+        base_col=oof_base[:, cls_idx],
+    )
+    n_pos = int(y.sum())
+    n_neg = len(y) - n_pos
+    if n_pos > 0 and n_neg > n_pos:
+        repeat = max(1, n_neg // n_pos)
+        pos_idx = np.where(y == 1)[0]
+        X_bal = np.vstack([X_cls, np.tile(X_cls[pos_idx], (repeat, 1))])
+        y_bal = np.concatenate([y, np.ones(len(pos_idx) * repeat, dtype=y.dtype)])
+    else:
+        X_bal, y_bal = X_cls, y
+    clf = MLPClassifier(**CFG["mlp_params"])
+    clf.fit(X_bal, y_bal)
+    probe_models[cls_idx] = clf
+
+print(f"MLP probes trained: {len(probe_models)}")
+
+# --- Optimize ensemble weight (TRAIN MODE ONLY) ---
+if MODE == "train" and oof_proto_flat is not None:
+    oof_mlp_flat = oof_base.copy()
+    for cls_idx, clf in probe_models.items():
+        X_cls = build_class_features(
+            Z_FULL,
+            raw_col=scores_full_raw[:, cls_idx],
+            prior_col=oof_prior[:, cls_idx],
+            base_col=oof_base[:, cls_idx],
+        )
+        if hasattr(clf, "predict_proba"):
+            prob = clf.predict_proba(X_cls)[:, 1].astype(np.float32)
+            pred = np.log(prob + 1e-7) - np.log(1 - prob + 1e-7)
+        else:
+            pred = clf.decision_function(X_cls).astype(np.float32)
+        alpha_probe = float(CFG["frozen_best_probe"]["alpha"])
+        oof_mlp_flat[:, cls_idx] = (1.0 - alpha_probe) * oof_base[:, cls_idx] + alpha_probe * pred
+
+    y_flat = labels_files.reshape(-1, N_CLASSES).astype(np.float32)
+    best_w, best_auc, weight_results = optimize_ensemble_weight(oof_proto_flat, oof_mlp_flat, y_flat)
+    ENSEMBLE_WEIGHT_PROTO = best_w
+
+    mlp_only_auc = macro_auc_skip_empty(y_flat, oof_mlp_flat)
+    print(f"\n=== Ensemble Optimization ===")
+    print(f"Best ProtoSSM weight: {ENSEMBLE_WEIGHT_PROTO:.2f}")
+    print(f"Best ensemble OOF AUC: {best_auc:.4f}")
+    print(f"MLP-only OOF AUC: {mlp_only_auc:.4f}")
+
+    for w, auc in weight_results:
+        marker = " <-- best" if abs(w - best_w) < 0.01 else ""
+        print(f"  w={w:.2f}: AUC={auc:.4f}{marker}")
+
+    LOGS["ensemble_weight"] = ENSEMBLE_WEIGHT_PROTO
+    LOGS["ensemble_auc"] = best_auc
+    LOGS["mlp_only_auc"] = mlp_only_auc
+else:
+    print(f"\nUsing default ensemble weight: ProtoSSM={ENSEMBLE_WEIGHT_PROTO:.2f}")
+
+LOGS["train_time_final"] = train_time
+LOGS["n_probe_models"] = len(probe_models)
+
+if fold_alphas:
+    mean_alphas = np.stack(fold_alphas).mean(axis=0)
+    print(f"\nFusion alpha (mean across folds):")
+    print(f"  ProtoSSM-dominant (alpha>0.5): {(mean_alphas > 0.5).sum()} classes")
+    print(f"  Perch-dominant (alpha<=0.5): {(mean_alphas <= 0.5).sum()} classes")

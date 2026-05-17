@@ -1,0 +1,249 @@
+# Residual SSM: second-pass boosting on first-pass errors
+# Wall-time safety: skip if > 4 min elapsed (leave max time for test inference)
+_wall_min = (time.time() - _WALL_START) / 60.0
+print(f"Wall time: {_wall_min:.1f} min")
+
+res_model = None
+CORRECTION_WEIGHT = 0.0
+
+if _wall_min < 4.0:
+    print("Training ResidualSSM...")
+    
+    class ResidualSSM(nn.Module):
+        # Lightweight SSM that takes first-pass scores + embeddings and predicts corrections.
+        # Architecture: project(concat(emb, first_pass)) -> 1-layer BiSSM -> linear head
+    
+        def __init__(self, d_input=1536, d_scores=234, d_model=64, d_state=8,
+                     n_classes=234, n_windows=12, dropout=0.1, n_sites=20, meta_dim=8):
+            super().__init__()
+            self.d_model = d_model
+            self.n_classes = n_classes
+    
+            # Project embeddings + first-pass scores
+            self.input_proj = nn.Sequential(
+                nn.Linear(d_input + d_scores, d_model),
+                nn.LayerNorm(d_model),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+    
+            # Metadata
+            self.site_emb = nn.Embedding(n_sites, meta_dim)
+            self.hour_emb = nn.Embedding(24, meta_dim)
+            self.meta_proj = nn.Linear(2 * meta_dim, d_model)
+    
+            # Positional encoding
+            self.pos_enc = nn.Parameter(torch.randn(1, n_windows, d_model) * 0.02)
+    
+            # Single bidirectional SSM layer (lightweight)
+            self.ssm_fwd = SelectiveSSM(d_model, d_state)
+            self.ssm_bwd = SelectiveSSM(d_model, d_state)
+            self.ssm_merge = nn.Linear(2 * d_model, d_model)
+            self.ssm_norm = nn.LayerNorm(d_model)
+            self.ssm_drop = nn.Dropout(dropout)
+    
+            # Output: per-class correction (additive)
+            self.output_head = nn.Linear(d_model, n_classes)
+    
+            # Initialize output near zero (corrections start small)
+            nn.init.zeros_(self.output_head.weight)
+            nn.init.zeros_(self.output_head.bias)
+    
+        def forward(self, emb, first_pass_scores, site_ids=None, hours=None):
+            # emb: (B, T, d_input), first_pass_scores: (B, T, n_classes)
+            B, T, _ = emb.shape
+    
+            # Concatenate embeddings with first-pass scores
+            x = torch.cat([emb, first_pass_scores], dim=-1)  # (B, T, d_input + d_scores)
+            h = self.input_proj(x)
+    
+            # Add metadata
+            if site_ids is not None and hours is not None:
+                site_e = self.site_emb(site_ids.clamp(0, self.site_emb.num_embeddings - 1))
+                hour_e = self.hour_emb(hours.clamp(0, 23))
+                meta = self.meta_proj(torch.cat([site_e, hour_e], dim=-1))
+                h = h + meta.unsqueeze(1)
+    
+            h = h + self.pos_enc[:, :T, :]
+    
+            # Bidirectional SSM
+            residual = h
+            h_f = self.ssm_fwd(h)
+            h_b = self.ssm_bwd(h.flip(1)).flip(1)
+            h = self.ssm_merge(torch.cat([h_f, h_b], dim=-1))
+            h = self.ssm_drop(h)
+            h = self.ssm_norm(h + residual)
+    
+            # Output correction
+            correction = self.output_head(h)  # (B, T, n_classes)
+            return correction
+    
+        def count_parameters(self):
+            return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
+    
+    # --- Train ResidualSSM on first-pass errors ---
+    
+    # Step 1: Compute first-pass scores on training data
+    model.eval()
+    with torch.no_grad():
+        emb_train_t = torch.tensor(emb_files, dtype=torch.float32)
+        logits_train_t = torch.tensor(logits_files, dtype=torch.float32)
+        site_train_t = torch.tensor(site_ids_all, dtype=torch.long)
+        hour_train_t = torch.tensor(hours_all, dtype=torch.long)
+    
+        proto_train_out, _, _ = model(emb_train_t, logits_train_t,
+                                       site_ids=site_train_t, hours=hour_train_t)
+        proto_train_scores = proto_train_out.numpy()  # (n_files, 12, 234)
+    
+    # MLP probe scores on training data (flat)
+    mlp_train_scores_flat = np.zeros_like(scores_full_raw, dtype=np.float32)
+    
+    # Get prior-fused base for MLP
+    train_base_scores, train_prior_scores = fuse_scores_with_tables(
+        scores_full_raw,
+        sites=meta_full["site"].to_numpy(),
+        hours=meta_full["hour_utc"].to_numpy(),
+        tables=final_prior_tables,
+    )
+    mlp_train_scores_flat = train_base_scores.copy()
+    
+    for cls_idx, clf in probe_models.items():
+        X_cls = build_class_features(
+            Z_FULL,
+            raw_col=scores_full_raw[:, cls_idx],
+            prior_col=train_prior_scores[:, cls_idx],
+            base_col=train_base_scores[:, cls_idx],
+        )
+        if hasattr(clf, "predict_proba"):
+            prob = clf.predict_proba(X_cls)[:, 1].astype(np.float32)
+            pred = np.log(prob + 1e-7) - np.log(1 - prob + 1e-7)
+        else:
+            pred = clf.decision_function(X_cls).astype(np.float32)
+        alpha_p = float(CFG["frozen_best_probe"]["alpha"])
+        mlp_train_scores_flat[:, cls_idx] = (1 - alpha_p) * train_base_scores[:, cls_idx] + alpha_p * pred
+    
+    # Reshape MLP scores to file-level
+    mlp_train_scores_files, _ = reshape_to_files(mlp_train_scores_flat, meta_full)
+    
+    # First-pass ensemble (same formula as test-time)
+    first_pass_files = (
+        ENSEMBLE_WEIGHT_PROTO * proto_train_scores +
+        (1 - ENSEMBLE_WEIGHT_PROTO) * mlp_train_scores_files
+    ).astype(np.float32)
+    
+    # Step 2: Compute residuals (what the first pass got wrong)
+    # Target: Y_FULL reshaped to files. Residual = target - sigmoid(first_pass)
+    labels_float = labels_files.astype(np.float32)
+    first_pass_probs = 1.0 / (1.0 + np.exp(-first_pass_files))
+    residuals = labels_float - first_pass_probs  # in [-1, 1]
+    
+    print(f"First-pass training scores: {first_pass_files.shape}")
+    print(f"Residuals: mean={residuals.mean():.4f}, std={residuals.std():.4f}, "
+          f"abs_mean={np.abs(residuals).mean():.4f}")
+    
+    # Step 3: Train ResidualSSM
+    res_cfg = CFG["residual_ssm"]
+    res_model = ResidualSSM(
+        d_input=emb_full.shape[1],
+        d_scores=N_CLASSES,
+        d_model=res_cfg["d_model"],
+        d_state=res_cfg["d_state"],
+        n_classes=N_CLASSES,
+        n_windows=N_WINDOWS,
+        dropout=res_cfg["dropout"],
+        n_sites=CFG["proto_ssm"]["n_sites"],
+        meta_dim=8,
+    ).to(DEVICE)
+    
+    print(f"ResidualSSM parameters: {res_model.count_parameters():,}")
+    
+    # Train with MSE loss on residuals
+    n_files = len(file_list)
+    n_val = max(1, int(n_files * 0.15))
+    perm = torch.randperm(n_files, generator=torch.Generator().manual_seed(123))
+    val_i = perm[:n_val].numpy()
+    train_i = perm[n_val:].numpy()
+    
+    emb_tr = torch.tensor(emb_files[train_i], dtype=torch.float32)
+    fp_tr = torch.tensor(first_pass_files[train_i], dtype=torch.float32)
+    res_tr = torch.tensor(residuals[train_i], dtype=torch.float32)
+    site_tr = torch.tensor(site_ids_all[train_i], dtype=torch.long)
+    hour_tr = torch.tensor(hours_all[train_i], dtype=torch.long)
+    
+    emb_va = torch.tensor(emb_files[val_i], dtype=torch.float32)
+    fp_va = torch.tensor(first_pass_files[val_i], dtype=torch.float32)
+    res_va = torch.tensor(residuals[val_i], dtype=torch.float32)
+    site_va = torch.tensor(site_ids_all[val_i], dtype=torch.long)
+    hour_va = torch.tensor(hours_all[val_i], dtype=torch.long)
+    
+    optimizer = torch.optim.AdamW(res_model.parameters(), lr=res_cfg["lr"], weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=res_cfg["lr"],
+        epochs=res_cfg["n_epochs"], steps_per_epoch=1,
+        pct_start=0.1, anneal_strategy='cos'
+    )
+    
+    best_val_loss = float('inf')
+    best_state = None
+    wait = 0
+    
+    t0_res = time.time()
+    for epoch in range(res_cfg["n_epochs"]):
+        res_model.train()
+        correction = res_model(emb_tr, fp_tr, site_ids=site_tr, hours=hour_tr)
+        loss = F.mse_loss(correction, res_tr)
+    
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(res_model.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
+    
+        res_model.eval()
+        with torch.no_grad():
+            val_corr = res_model(emb_va, fp_va, site_ids=site_va, hours=hour_va)
+            val_loss = F.mse_loss(val_corr, res_va)
+    
+        if val_loss.item() < best_val_loss:
+            best_val_loss = val_loss.item()
+            best_state = {k: v.clone() for k, v in res_model.state_dict().items()}
+            wait = 0
+        else:
+            wait += 1
+    
+        if (epoch + 1) % 20 == 0:
+            print(f"  ResidualSSM epoch {epoch+1}: train={loss.item():.6f} val={val_loss.item():.6f} wait={wait}")
+    
+        if wait >= res_cfg["patience"]:
+            print(f"  ResidualSSM early stop at epoch {epoch+1}")
+            break
+    
+    if best_state is not None:
+        res_model.load_state_dict(best_state)
+    
+    res_time = time.time() - t0_res
+    print(f"ResidualSSM training time: {res_time:.1f}s")
+    print(f"Best val MSE: {best_val_loss:.6f}")
+    
+    # Verify correction magnitude
+    res_model.eval()
+    with torch.no_grad():
+        all_corr = res_model(emb_train_t, torch.tensor(first_pass_files, dtype=torch.float32),
+                             site_ids=site_train_t, hours=hour_train_t)
+        corr_np = all_corr.numpy()
+        print(f"Correction magnitude: mean_abs={np.abs(corr_np).mean():.4f}, max={np.abs(corr_np).max():.4f}")
+    
+    CORRECTION_WEIGHT = res_cfg["correction_weight"]
+    print(f"Correction weight: {CORRECTION_WEIGHT}")
+    LOGS["residual_ssm"] = {
+        "params": res_model.count_parameters(),
+        "train_time": res_time,
+        "best_val_mse": best_val_loss,
+        "correction_mean_abs": float(np.abs(corr_np).mean()),
+        "correction_weight": CORRECTION_WEIGHT,
+    }
+    
+else:
+    print("SKIPPED ResidualSSM (wall time safety)")
+    LOGS["residual_ssm"] = {"skipped": True, "wall_min": _wall_min}

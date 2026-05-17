@@ -1,0 +1,5 @@
+MARKDOWN CELL 12
+================================================================================
+
+## Perch Inference Engine
+Core inference function with embedding extraction and genus proxies.

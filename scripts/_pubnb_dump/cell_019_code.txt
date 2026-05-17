@@ -1,0 +1,166 @@
+# V16/V17 NEW: Focal loss, file-level scaling, TTA, rank-aware, delta shift, per-class thresholds
+
+def focal_bce_with_logits(logits, targets, gamma=2.0, pos_weight=None, reduction="mean"):
+    """Focal loss for multi-label classification.
+    Reduces contribution of easy examples, focuses on hard ones."""
+    if pos_weight is not None:
+        bce = F.binary_cross_entropy_with_logits(
+            logits, targets, pos_weight=pos_weight, reduction="none"
+        )
+    else:
+        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    
+    p = torch.sigmoid(logits)
+    pt = targets * p + (1 - targets) * (1 - p)
+    focal_weight = (1 - pt) ** gamma
+    loss = focal_weight * bce
+    
+    if reduction == "mean":
+        return loss.mean()
+    return loss
+
+
+def file_level_confidence_scale(preds, n_windows=12, top_k=2):
+    """Rank 1/2 technique: scale each window's predictions by the file's top-K mean confidence."""
+    N, C = preds.shape
+    assert N % n_windows == 0
+    view = preds.reshape(-1, n_windows, C)
+    sorted_view = np.sort(view, axis=1)
+    top_k_mean = sorted_view[:, -top_k:, :].mean(axis=1, keepdims=True)
+    scaled = view * top_k_mean
+    return scaled.reshape(N, C)
+
+
+def temporal_shift_tta(emb_files, logits_files, model, site_ids, hours, shifts=[0, 1, -1]):
+    """TTA by circular-shifting the 12-window embedding sequence."""
+    all_preds = []
+    model.eval()
+    
+    for shift in shifts:
+        if shift == 0:
+            e = emb_files
+            l = logits_files
+        else:
+            e = np.roll(emb_files, shift, axis=1)
+            l = np.roll(logits_files, shift, axis=1)
+        
+        with torch.no_grad():
+            out, _, _ = model(
+                torch.tensor(e, dtype=torch.float32),
+                torch.tensor(l, dtype=torch.float32),
+                site_ids=torch.tensor(site_ids, dtype=torch.long),
+                hours=torch.tensor(hours, dtype=torch.long),
+            )
+            pred = out.numpy()
+        
+        if shift != 0:
+            pred = np.roll(pred, -shift, axis=1)
+        
+        all_preds.append(pred)
+    
+    return np.mean(all_preds, axis=0)
+
+
+# V17: Post-processing utilities
+
+def rank_aware_scaling(scores, n_windows=12, power=0.5):
+    """V17: 2025 Rank 3 technique. Scale each window by (file_max)^power.
+    Suppresses predictions in uncertain files, boosts confident files."""
+    N, C = scores.shape
+    assert N % n_windows == 0
+    n_files = N // n_windows
+    
+    view = scores.reshape(n_files, n_windows, C)
+    file_max = view.max(axis=1, keepdims=True)  # (F, 1, C)
+    
+    # Apply power transform to file max
+    scale = np.power(file_max, power)
+    
+    # Scale each window
+    scaled = view * scale
+    return scaled.reshape(N, C)
+
+
+def delta_shift_smooth(scores, n_windows=12, alpha=0.15):
+    """V17: 2025 Rank 1 technique. Temporal smoothing across windows.
+    new[t] = (1-alpha)*old[t] + 0.5*alpha*(old[t-1] + old[t+1])"""
+    N, C = scores.shape
+    assert N % n_windows == 0
+    n_files = N // n_windows
+    
+    view = scores.reshape(n_files, n_windows, C)
+    
+    # Create shifted versions
+    prev_view = np.concatenate([view[:, :1, :], view[:, :-1, :]], axis=1)
+    next_view = np.concatenate([view[:, 1:, :], view[:, -1:, :]], axis=1)
+    
+    # Delta shift smoothing
+    smoothed = (1 - alpha) * view + 0.5 * alpha * (prev_view + next_view)
+    
+    return smoothed.reshape(N, C)
+
+
+def optimize_per_class_thresholds(oof_scores, y_true, n_windows=12, thresholds=[0.3, 0.4, 0.5, 0.6, 0.7]):
+    """V17: Find optimal decision threshold per class from OOF predictions.
+    Optimizes F1-like metric (precision-recall balance) for each species."""
+    n_classes = oof_scores.shape[1]
+    best_thresholds = np.zeros(n_classes)
+    best_scores = np.zeros(n_classes)
+    
+    for c in range(n_classes):
+        y_c = y_true[:, c]
+        scores_c = oof_scores[:, c]
+        
+        # Skip classes with no positive samples
+        if y_c.sum() == 0:
+            best_thresholds[c] = 0.5
+            continue
+            
+        # Find best threshold
+        best_f1 = 0
+        best_t = 0.5
+        
+        for t in thresholds:
+            pred_c = (scores_c > t).astype(int)
+            tp = ((pred_c == 1) & (y_c == 1)).sum()
+            fp = ((pred_c == 1) & (y_c == 0)).sum()
+            fn = ((pred_c == 0) & (y_c == 1)).sum()
+            
+            if tp + fp == 0 or tp + fn == 0:
+                continue
+                
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn)
+            f1 = 2 * precision * recall / (precision + recall + 1e-8)
+            
+            if f1 > best_f1:
+                best_f1 = f1
+                best_t = t
+        
+        best_thresholds[c] = best_t
+        best_scores[c] = best_f1
+    
+    return best_thresholds, best_scores
+
+
+def apply_per_class_thresholds(scores, thresholds, n_windows=12):
+    """V17: Apply per-class thresholds to convert scores to binary predictions."""
+    N, C = scores.shape
+    assert C == len(thresholds)
+    
+    # For competition, we submit probabilities but threshold for metrics
+    # Apply threshold as a scaling factor that sharpens confident predictions
+    scaled = np.copy(scores)
+    
+    for c in range(C):
+        t = thresholds[c]
+        # Sharpen: push above-threshold scores higher, below-threshold lower
+        mask_above = scores[:, c] > t
+        scaled[mask_above, c] = 0.5 + 0.5 * (scores[mask_above, c] - t) / (1 - t + 1e-8)
+        scaled[~mask_above, c] = 0.5 * scores[~mask_above, c] / (t + 1e-8)
+    
+    return np.clip(scaled, 0, 1)
+
+
+print("V17 utilities defined: focal_bce_with_logits, file_level_confidence_scale, temporal_shift_tta,")
+print("  rank_aware_scaling, delta_shift_smooth, optimize_per_class_thresholds, apply_per_class_thresholds")

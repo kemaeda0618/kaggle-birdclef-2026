@@ -1,0 +1,12 @@
+# BirdCLEF+ 2026 -- ProtoSSM v5: Maximum Ensemble
+
+## V17 -- 11 Targeted Improvements over V16 (0.924)
+
+### Additions over V16:
+1. **Larger model**: d_model 192→256, 3 SSM layers (more capacity)
+2. **Rank-aware post-processing**: Scale by file max prediction (2025 Rank 3)
+3. **Delta shift smoothing**: Temporal smoothing across windows (2025 Rank 1)
+4. **Per-class thresholds**: OOF-optimized decision thresholds per species
+5. All V16 improvements: Mixup, Focal loss, Cross-attention, SWA, TTA, per-taxon temp, file-level scaling
+
+Pipeline: `Perch -> ProtoSSM_v5(pass1) + MLP -> ensemble -> ResidualSSM(pass2) -> TTA -> per-taxon temp -> file-level scale -> rank-aware -> delta smooth -> per-class threshold -> final`

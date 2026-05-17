@@ -1,0 +1,2 @@
+CLASS_WEIGHTS = build_class_freq_weights(Y_FULL_TRUTH)
+print("✅ Class weights built")

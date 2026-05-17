@@ -1,0 +1,23 @@
+# Cell 11 — Freeze final probe params
+if BEST_PROBE is None:
+    BEST_PROBE = CFG["frozen_best_probe"]
+
+print("Final BEST_PROBE =", BEST_PROBE)
+
+# Optional — rerun best OOF probe once for diagnostics / caching
+BEST_OOF_RESULT = None
+
+if MODE == "train":
+    BEST_OOF_RESULT = run_oof_embedding_probe(
+        scores_raw=scores_full_raw,
+        emb=emb_full,
+        meta_df=meta_full,
+        y_true=Y_FULL,
+        pca_dim=int(BEST_PROBE["pca_dim"]),
+        min_pos=int(BEST_PROBE["min_pos"]),
+        C=float(BEST_PROBE["C"]),
+        alpha=float(BEST_PROBE["alpha"]),
+    )
+
+    print(f"Honest OOF baseline AUC (BEST_PROBE rerun): {BEST_OOF_RESULT['score_base']:.6f}")
+    print(f"Honest OOF probe AUC   (BEST_PROBE rerun): {BEST_OOF_RESULT['score_final']:.6f}")

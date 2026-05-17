@@ -1,0 +1,235 @@
+primary_label,common_name,scientific_name,class_name,n_positive,perch_mapped,auc_base,auc_final
+1161364,Guyalna cuta,Guyalna cuta,Insecta,0,True,,
+116570,Southern Spectacled Caiman,Caiman yacare,Reptilia,13,False,0.34128389596015496,0.6330935251798562
+1176823,Wrestler Frog,Leptodactylus luctator,Amphibia,0,True,,
+1491113,Guaraní leaf-litter frog,Adenomera guarani,Amphibia,79,False,0.6054215049002838,0.500613793242237
+1595929,Uruguay Harlequin Frog,Lysapsus limellum,Amphibia,0,False,,
+209233,Feral Horse,Equus caballus,Mammalia,0,True,,
+22930,Basin White-lipped Frog,Leptodactylus syphax,Amphibia,0,True,,
+22956,Mustached Frog,Leptodactylus mystacinus,Amphibia,0,True,,
+22961,Pointedbelly Frog,Leptodactylus podicipinus,Amphibia,36,True,0.39814814814814814,0.5432787698412698
+22967,Marbled White-lipped Frog,Leptodactylus elenae,Amphibia,155,True,0.6016099865834451,0.6244997958350347
+22973,Whistling Grass Frog,Leptodactylus fuscus,Amphibia,212,True,0.8492087644552647,0.8053104077906268
+22983,Pepper Frog,Leptodactylus labyrinthicus,Amphibia,0,True,,
+22985,Peter's Jungle Frog,Leptodactylus petersii,Amphibia,0,True,,
+23150,Central Dwarf Frog,Physalaemus centralis,Amphibia,0,True,,
+23154,Bahia Dwarf Frog,Physalaemus albifrons,Amphibia,0,True,,
+23158,Pale-legged Weeping Frog,Physalaemus albonotatus,Amphibia,175,True,0.7861699276333424,0.7745054945054946
+23176,Cope's Swamp Froglet,Pseudopaludicola mystacalis,Amphibia,0,True,,
+23724,Waxy Monkey Tree Frog,Phyllomedusa sauvagii,Amphibia,0,True,,
+24279,Lesser Snouted Tree Frog,Scinax nasicus,Amphibia,173,True,0.807390200421371,0.8466209280968072
+24285,Snouted Tree Frog,Scinax fuscovarius,Amphibia,0,True,,
+24287,Brown-bordered Snouted Tree Frog,Scinax fuscomarginatus,Amphibia,0,True,,
+24321,Mato Grosso Snouted Tree Frog,Scinax acuminatus,Amphibia,172,True,0.28101136758070117,0.4306338944810829
+244024,Giant Cicada,Quesada gigas,Insecta,0,True,,
+25073,Chiasmocleis mehelyi,Chiasmocleis mehelyi,Amphibia,12,False,0.07890325670498083,0.09614463601532565
+25092,Two-colored oval frog,Elachistocleis bicolor,Amphibia,24,True,0.31901803118908384,0.3824926900584795
+25214,Muller's Termite Frog,Dermatonotus muelleri,Amphibia,0,True,,
+326272,Weeping Frog,Physalaemus biligonigerus,Amphibia,23,True,0.0734370041256744,0.07680101555061884
+41970,Jaguar,Panthera onca,Mammalia,0,True,,
+43435,Black Howling Monkey,Alouatta caraya,Mammalia,12,True,0.9846743295019157,0.8611111111111112
+47144,Domestic Dog,Canis familiaris,Mammalia,15,True,0.7898027898027897,0.8015392015392014
+47158son01,Insect sonotype01,Insect son01,Insecta,23,False,0.12259600126943829,0.16236115518882893
+47158son02,Insect sonotype02,Insect son02,Insecta,7,False,0.037803138373751766,0.037803138373751766
+47158son03,Insect sonotype03,Insect son03,Insecta,33,False,0.1985858585858586,0.5652525252525252
+47158son04,Insect sonotype04,Insect son04,Insecta,17,False,0.0694219800800204,0.2065208138248063
+47158son05,Insect sonotype05,Insect son05,Insecta,3,False,0.12836879432624113,0.12836879432624113
+47158son06,Insect sonotype06,Insect son06,Insecta,18,False,0.030434782608695643,0.05942028985507247
+47158son07,Insect sonotype07,Insect son07,Insecta,48,False,0.009090909090909094,0.009090909090909094
+47158son08,Insect sonotype08,Insect son08,Insecta,17,False,0.2900740614625011,0.5070230697199285
+47158son09,Insect sonotype09,Insect son09,Insecta,6,False,0.038461538461538436,0.038461538461538436
+47158son10,Insect sonotype10,Insect son10,Insecta,33,False,0.6042424242424242,0.6099214365881033
+47158son11,Insect sonotype11,Insect son11,Insecta,36,False,0.23214285714285712,0.3142774470899471
+47158son12,Insect sonotype12,Insect son12,Insecta,5,False,0.03911806543385493,0.03911806543385493
+47158son13,Insect sonotype13,Insect son13,Insecta,36,False,0.08630952380952378,0.07762896825396826
+47158son14,Insect sonotype14,Insect son14,Insecta,12,False,0.03448275862068967,0.03448275862068967
+47158son15,Insect sonotype15,Insect son15,Insecta,12,False,0.03448275862068967,0.12356321839080459
+47158son16,Insect sonotype16,Insect son16,Insecta,12,False,0.03448275862068967,0.12356321839080459
+47158son17,Insect sonotype17,Insect son17,Insecta,43,False,0.012781954887218061,0.04135338345864664
+47158son18,Insect sonotype18,Insect son18,Insecta,12,False,0.03448275862068967,0.16810344827586204
+47158son19,Insect sonotype19,Insect son19,Insecta,5,False,0.03911806543385493,0.03911806543385493
+47158son20,Insect sonotype20,Insect son20,Insecta,12,False,0.03448275862068967,0.0646551724137931
+47158son21,Insect sonotype21,Insect son21,Insecta,22,False,0.027696793002915443,0.027696793002915443
+47158son22,Insect sonotype22,Insect son22,Insecta,24,False,0.026315789473684237,0.026315789473684237
+47158son23,Insect sonotype23,Insect son23,Insecta,24,False,0.026315789473684237,0.026315789473684237
+47158son24,Insect sonotype24,Insect son24,Insecta,24,False,0.026315789473684237,0.026315789473684237
+47158son25,Insect sonotype25,Insect son25,Insecta,84,False,0.49175824175824173,0.7087148962148961
+476521,Cuyaba Dwarf Frog,Physalaemus nattereri,Amphibia,0,True,,
+516975,Hooded Capuchin,Sapajus cay,Mammalia,0,False,,
+517063,Southern Orange-legged Leaf Frog,Pithecopus azureus,Amphibia,307,True,0.41979741200744064,0.829960928298147
+555123,Usina Tree Frog,Boana lundii,Amphibia,0,True,,
+555145,Polka-dot Tree Frog,Boana punctata,Amphibia,0,True,,
+555146,Chaco Tree Frog,Boana raniceps,Amphibia,203,True,0.5468077842266985,0.7564844169145978
+64898,Yungas de la Paz Poison Frog,Ameerega picta,Amphibia,0,True,,
+65377,Lesser Tree Frog,Dendropsophus minutus,Amphibia,9,True,0.3493880146240661,0.28135431568907965
+65380,Dwarf Tree Frog,Dendropsophus nanus,Amphibia,333,True,0.8219659659659659,0.9309069069069069
+66971,Paraguayan Swimming Frog,Pseudis platensis,Amphibia,149,True,0.5366606235967872,0.5522085219291399
+67107,Rococo Toad,Rhinella diptycha,Amphibia,9,True,0.3601971069782229,0.3150532506755682
+67252,Milk Frog,Trachycephalus typhonius,Amphibia,2,True,0.8569405099150141,0.8569405099150141
+70711,Cei's White-lipped Frog,Leptodactylus macrosternum,Amphibia,0,True,,
+738183,White-coated Titi,Plecturocebus pallescens,Mammalia,0,True,,
+74113,Highland,Bos taurus,Mammalia,2,True,0.8512747875354107,0.8512747875354107
+74580,Black-tailed Marmoset,Mico melanurus,Mammalia,0,False,,
+760266,Prionacris erosa,Prionacris erosa,Insecta,0,True,,
+ashgre1,Ashy-headed Greenlet,Hylophilus pectoralis,Aves,0,True,,
+astcra1,Ash-throated Crake,Mustelirallus albicollis,Aves,0,True,,
+bafcur1,Bare-faced Curassow,Crax fasciolata,Aves,9,True,0.8318232395485614,0.6792242886663488
+baffal1,Barred Forest-Falcon,Micrastur ruficollis,Aves,0,True,,
+banana,Bananaquit,Coereba flaveola,Aves,0,True,,
+barant1,Barred Antshrike,Thamnophilus doliatus,Aves,0,True,,
+batbel1,Bare-throated Bellbird,Procnias nudicollis,Aves,0,True,,
+baymac,Blue-and-yellow Macaw,Ara ararauna,Aves,0,True,,
+bbwduc,Black-bellied Whistling Duck,Dendrocygna autumnalis,Aves,0,True,,
+bcwfin2,Black-capped Warbling Finch,Microspingus melanoleucus,Aves,0,True,,
+bkcdon,Black-capped Donacobius,Donacobius atricapilla,Aves,0,True,,
+bkhpar,Nanday Parakeet,Aratinga nenday,Aves,0,True,,
+blchaw1,Black-collared Hawk,Busarellus nigricollis,Aves,0,True,,
+blheag1,Black Hawk-Eagle,Spizaetus tyrannus,Aves,0,True,,
+blttit1,Black-tailed Tityra,Tityra cayana,Aves,0,True,,
+bncfly,Brown-crested Flycatcher,Myiarchus tyrannulus,Aves,0,True,,
+bobfly1,Boat-billed Flycatcher,Megarynchus pitangua,Aves,0,True,,
+brcmar1,Brown-chested Martin,Progne tapera,Aves,0,True,,
+brnowl,American Barn Owl,Tyto furcata,Aves,0,True,,
+bucmot4,Amazonian Motmot,Momotus momota,Aves,0,True,,
+bucpar,Blue-crowned Parakeet,Thectocercus acuticaudatus,Aves,0,True,,
+bufpar,Turquoise-fronted Amazon,Amazona aestiva,Aves,14,True,0.9987649238369699,0.99876492383697
+bunibi1,Buff-necked Ibis,Theristicus caudatus,Aves,2,True,0.6494334277620397,0.6494334277620397
+burowl,Burrowing Owl,Athene cunicularia,Aves,0,True,,
+camfli1,Campo Flicker,Colaptes campestris,Aves,0,True,,
+chacha1,Chaco Chachalaca,Ortalis canicollis,Aves,63,True,0.940125507567368,0.8820474960009843
+chbmoc1,Chalk-browed Mockingbird,Mimus saturninus,Aves,0,True,,
+chobla1,Chopi Blackbird,Gnorimopsar chopi,Aves,0,True,,
+chvcon1,Chestnut-vented Conebill,Conirostrum speciosum,Aves,35,True,0.9676077265973254,0.9257057949479941
+cibspi1,Cinereous-breasted Spinetail,Synallaxis hypospodia,Aves,0,True,,
+coffal1,Collared Forest-Falcon,Micrastur semitorquatus,Aves,0,True,,
+compau,Pauraque,Nyctidromus albicollis,Aves,37,True,0.8888307085028396,0.9198453296813953
+compot1,Common Potoo,Nyctibius griseus,Aves,3,True,0.948936170212766,0.948936170212766
+crbthr1,Creamy-bellied Thrush,Turdus amaurochalinus,Aves,0,True,,
+crebec1,Crested Becard,Pachyramphus validus,Aves,0,True,,
+dwatin1,Dwarf Tinamou,Taoniscus nanus,Aves,0,True,,
+epaori4,Variable Oriole,Icterus pyrrhopterus,Aves,0,True,,
+eulfly1,Euler's Flycatcher,Lathrotriccus euleri,Aves,0,True,,
+fabwre1,Fawn-breasted Wren,Cantorchilus guarayanus,Aves,0,True,,
+fepowl,Ferruginous Pygmy Owl,Glaucidium brasilianum,Aves,0,True,,
+ficman1,Fiery-capped Manakin,Machaeropterus pyrocephalus,Aves,0,True,,
+flawar1,Flavescent Warbler,Myiothlypis flaveola,Aves,0,True,,
+fotfly,Fork-tailed Flycatcher,Tyrannus savana,Aves,0,True,,
+fusfly1,Fuscous Flycatcher,Cnemotriccus fuscatus,Aves,3,True,0.9877068557919622,0.9877068557919622
+gilhum1,Gilded Hummingbird,Hylocharis chrysura,Aves,0,True,,
+giwrai1,Giant Wood Rail,Aramides ypecaha,Aves,0,True,,
+glteme1,Glittering-throated Emerald,Chionomesa fimbriata,Aves,0,True,,
+grasal3,Bluish-grey Saltator,Saltator coerulescens,Aves,0,True,,
+greani1,Greater Ani,Crotophaga major,Aves,0,True,,
+greant1,Great Antshrike,Taraba major,Aves,0,True,,
+greela,Greenish Elaenia,Myiopagis viridicata,Aves,0,True,,
+grekis,Great Kiskadee,Pitangus sulphuratus,Aves,0,True,,
+grepot1,Great Potoo,Nyctibius grandis,Aves,0,True,,
+gretho2,Greater Thornbird,Phacellodomus ruber,Aves,0,True,,
+greyel,Greater Yellowlegs,Tringa melanoleuca,Aves,0,True,,
+grfdov1,Grey-fronted Dove,Leptotila rufaxilla,Aves,0,True,,
+grhtan1,Grey-headed Tanager,Eucometis penicillata,Aves,0,True,,
+gycwor1,Grey-cowled Wood Rail,Aramides cajaneus,Aves,0,True,,
+horscr1,Horned Screamer,Anhima cornuta,Aves,0,True,,
+houspa,House Sparrow,Passer domesticus,Aves,0,True,,
+hyamac1,Hyacinth Macaw,Anodorhynchus hyacinthinus,Aves,10,True,0.9915472779369627,0.9896848137535816
+larela1,Large Elaenia,Elaenia spectabilis,Aves,0,True,,
+lesela1,Lesser Elaenia,Elaenia chiriquensis,Aves,0,True,,
+lesgrf1,Lesser Grass-Finch,Emberizoides ypiranganus,Aves,0,True,,
+limpki,Limpkin,Aramus guarauna,Aves,3,True,0.7281323877068557,0.7281323877068557
+linwoo1,Lineated Woodpecker,Dryocopus lineatus,Aves,0,True,,
+litcuc2,Little Cuckoo,Coccycua minuta,Aves,0,True,,
+litnig1,Little Nightjar,Setopagis parvula,Aves,37,True,0.7936923510694002,0.8277681556370081
+mabpar,Maroon-bellied Parakeet,Pyrrhura frontalis,Aves,0,True,,
+magant1,Mato Grosso Antbird,Cercomacra melanaria,Aves,5,True,0.647226173541963,0.647226173541963
+magtan2,Magpie Tanager,Cissopis leverianus,Aves,0,True,,
+masgna1,Masked Gnatcatcher,Polioptila dumicola,Aves,0,True,,
+nacnig1,Nacunda Nighthawk,Chordeiles nacunda,Aves,11,True,0.6297117516629712,0.6857962697274032
+ocecra1,Ocellated Crake,Rufirallus schomburgkii,Aves,0,True,,
+oliwoo1,Olivaceous Woodcreeper,Sittasomus griseicapillus,Aves,0,True,,
+orbtro3,Orange-backed Troupial,Icterus croconotus,Aves,0,True,,
+orwpar,Orange-winged Amazon,Amazona amazonica,Aves,13,True,0.8178195904814609,0.6023242944106253
+osprey,Osprey,Pandion haliaetus,Aves,0,True,,
+pabspi1,Pale-breasted Spinetail,Synallaxis albescens,Aves,0,True,,
+palhor3,Pale-legged Hornero,Furnarius leucopus,Aves,0,True,,
+paltan1,Palm Tanager,Thraupis palmarum,Aves,0,True,,
+phecuc1,Pheasant Cuckoo,Dromococcyx phasianellus,Aves,0,True,,
+picpig2,Picazuro Pigeon,Patagioenas picazuro,Aves,0,True,,
+pirfly1,Piratic Flycatcher,Legatus leucophaius,Aves,0,True,,
+plasla1,Planalto Slaty Antshrike,Thamnophilus pelzelni,Aves,0,True,,
+platyr1,Plain Inezia,Inezia inornata,Aves,0,True,,
+plcjay1,Plush-crested Jay,Cyanocorax chrysops,Aves,0,True,,
+pluibi1,Plumbeous Ibis,Theristicus caerulescens,Aves,0,True,,
+purjay1,Purplish Jay,Cyanocorax cyanomelas,Aves,5,True,0.5812233285917496,0.5812233285917496
+pvttyr1,Pearly-vented Tody-Tyrant,Hemitriccus margaritaceiventer,Aves,0,True,,
+ragmac1,Red-and-green Macaw,Ara chloropterus,Aves,0,True,,
+rebscy1,Red-billed Scythebill,Campylorhamphus trochilirostris,Aves,0,True,,
+recfin1,Red-crested Finch,Coryphospingus cucullatus,Aves,0,True,,
+redjun,Red Junglefowl,Gallus gallus,Aves,12,True,0.3515325670498084,0.4528256704980843
+relser1,Red-legged Seriema,Cariama cristata,Aves,0,True,,
+rinkin1,Ringed Kingfisher,Megaceryle torquata,Aves,0,True,,
+rivwar1,Riverbank Warbler,Myiothlypis rivularis,Aves,0,True,,
+roahaw,Roadside Hawk,Rupornis magnirostris,Aves,0,True,,
+rubthr1,Rufous-bellied Thrush,Turdus rufiventris,Aves,0,True,,
+rufcac2,Rufous Cacholote,Pseudoseisura unirufa,Aves,0,True,,
+rufcas2,Rufous Casiornis,Casiornis rufus,Aves,0,True,,
+rufgna3,Rufous Gnateater,Conopophaga lineata,Aves,0,True,,
+rufhor2,Rufous Hornero,Furnarius rufus,Aves,4,True,0.7677556818181818,0.7677556818181818
+rufnig1,Rufous Nightjar,Antrostomus rufus,Aves,0,True,,
+ruftho1,Rufous-fronted Thornbird,Phacellodomus rufifrons,Aves,0,True,,
+ruftof1,Rusty-fronted Tody-Flycatcher,Poecilotriccus latirostris,Aves,0,True,,
+rumfly1,Rusty-margined Flycatcher,Myiozetetes cayanensis,Aves,0,True,,
+ruther1,Rufescent Tiger Heron,Tigrisoma lineatum,Aves,1,True,0.9985855728429985,0.9985855728429985
+rutjac1,Rufous-tailed Jacamar,Galbula ruficauda,Aves,1,True,0.7892503536067892,0.7892503536067892
+sabspa1,Saffron-billed Sparrow,Arremon flavirostris,Aves,0,True,,
+saffin,Saffron Finch,Sicalis flaveola,Aves,0,True,,
+saytan1,Sayaca Tanager,Thraupis sayaca,Aves,0,True,,
+scadov1,Scaled Dove,Columbina squammata,Aves,0,True,,
+schpar1,Scaly-headed Parrot,Pionus maximiliani,Aves,0,True,,
+scther1,Scale-throated Hermit,Phaethornis eurynome,Aves,0,True,,
+shcfly1,Short-crested Flycatcher,Myiarchus ferox,Aves,0,True,,
+shshaw,Sharp-shinned Hawk,Accipiter striatus,Aves,0,True,,
+shtnig1,Short-tailed Nighthawk,Lurocalis semitorquatus,Aves,0,True,,
+sibtan2,Silver-beaked Tanager,Ramphocelus carbo,Aves,1,True,1.0,1.0
+smbani,Smooth-billed Ani,Crotophaga ani,Aves,0,True,,
+smbtin1,Small-billed Tinamou,Crypturellus parvirostris,Aves,0,True,,
+sobcac1,Solitary Cacique,Cacicus solitarius,Aves,0,True,,
+sobtyr1,Southern Beardless Tyrannulet,Camptostoma obsoletum,Aves,0,True,,
+socfly1,Social Flycatcher,Myiozetetes similis,Aves,0,True,,
+sofspi1,Sooty-fronted Spinetail,Synallaxis frontalis,Aves,0,True,,
+souant1,Southern Antpipit,Corythopis delalandi,Aves,0,True,,
+soulap1,Southern Lapwing,Vanellus chilensis,Aves,0,True,,
+souscr1,Southern Screamer,Chauna torquata,Aves,0,True,,
+spbant3,Spot-backed Antshrike,Hypoedaleus guttatus,Aves,0,True,,
+spispi1,Spix's Spinetail,Synallaxis spixi,Aves,0,True,,
+sptnig1,Spot-tailed Nightjar,Antiurus maculicaudus,Aves,0,True,,
+squcuc1,Common Squirrel-Cuckoo,Piaya cayana,Aves,0,True,,
+stbwoo2,Straight-billed Woodcreeper,Dendroplex picus,Aves,0,True,,
+strcuc1,Striped Cuckoo,Tapera naevia,Aves,0,True,,
+strher2,Striated Heron,Butorides striata,Aves,2,True,0.3958923512747875,0.3958923512747875
+strowl1,Striped Owl,Asio clamator,Aves,0,True,,
+swthum1,Swallow-tailed Hummingbird,Eupetomena macroura,Aves,0,True,,
+swtman1,Swallow-tailed Manakin,Chiroxiphia caudata,Aves,0,True,,
+tattin1,Tataupa Tinamou,Crypturellus tataupa,Aves,0,True,,
+thlwre1,Thrush-like Wren,Campylorhynchus turdinus,Aves,0,True,,
+toctou1,Toco Toucan,Ramphastos toco,Aves,0,True,,
+trokin,Tropical Kingbird,Tyrannus melancholicus,Aves,0,True,,
+trsowl,Tropical Screech Owl,Megascops choliba,Aves,26,True,0.5562260320324837,0.6733025039476652
+undtin1,Undulated Tinamou,Crypturellus undulatus,Aves,43,True,0.8475607623710438,0.6617240776359503
+varant1,Variable Antshrike,Thamnophilus caerulescens,Aves,0,True,,
+watjac1,Wattled Jacana,Jacana jacana,Aves,0,True,,
+wesfie1,Western Fire-eye,Pyriglena maura,Aves,0,True,,
+wfwduc1,White-faced Whistling Duck,Dendrocygna viduata,Aves,1,True,1.0,1.0
+whbant2,White-bearded Antshrike,Biatas nigropectus,Aves,0,True,,
+whbwar2,White-browed Warbler,Myiothlypis leucoblephara,Aves,0,True,,
+whiwoo1,White Woodpecker,Melanerpes candidus,Aves,0,True,,
+whlspi1,White-lored Spinetail,Synallaxis albilora,Aves,0,True,,
+whnjay1,White-naped Jay,Cyanocorax cyanopogon,Aves,0,True,,
+whtdov,White-tipped Dove,Leptotila verreauxi,Aves,63,True,0.9611664820967146,0.9165743816906607
+whwpic1,White-wedged Piculet,Picumnus albosquamatus,Aves,0,True,,
+y00678,Crested Caracara,Caracara plancus,Aves,0,True,,
+yebcar,Yellow-billed Cardinal,Paroaria capitata,Aves,0,True,,
+yebela1,Yellow-bellied Elaenia,Elaenia flavogaster,Aves,0,True,,
+yecmac,Golden-collared Macaw,Primolius auricollis,Aves,0,True,,
+yecpar,Yellow-chevroned Parakeet,Brotogeris chiriri,Aves,0,True,,
+yehcar1,Yellow-headed Caracara,Daptrius chimachima,Aves,0,True,,
+yeofly1,Yellow-olive Flatbill,Tolmomyias sulphurescens,Aves,0,True,,

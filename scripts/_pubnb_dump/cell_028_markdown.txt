@@ -1,0 +1,2 @@
+## Classwise Probes
+Per-class MLP/LogReg probes on PCA-compressed embeddings.

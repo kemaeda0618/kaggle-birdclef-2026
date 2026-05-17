@@ -1,0 +1,23 @@
+# ── STEP 6: Ensemble Weight Sweep ──
+def sweep_ensemble_weight(oof_proto, oof_mlp, Y_FULL, 
+                          n_windows=12,
+                          candidates=np.arange(0.3, 0.8, 0.05)):
+    n_files = oof_proto.shape[0] // n_windows
+    file_y  = Y_FULL.reshape(n_files, n_windows, -1).max(axis=1)
+    best_auc, best_w = 0.0, 0.6
+
+    for w in candidates:
+        blended   = w * oof_proto + (1-w) * oof_mlp
+        file_pred = blended.reshape(n_files, n_windows, -1).max(axis=1)
+        try:
+            auc = macro_auc_skip_empty(file_y, file_pred)
+        except:
+            continue
+        if auc > best_auc:
+            best_auc, best_w = auc, w
+
+    print(f"Best ensemble weight (proto): {best_w:.2f}")
+    print(f"Best AUC: {best_auc:.5f}")
+    return best_w
+
+print("✅ Ensemble Weight Sweep defined")

@@ -1,0 +1,22 @@
+CODE CELL 21 (notebook index 22)
+================================================================================
+
+# Cell 18 — Build submission with temperature scaling
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+TEMPERATURE = 1.10
+submission = pd.DataFrame(sigmoid(final_test_scores / TEMPERATURE), columns=PRIMARY_LABELS)
+submission.insert(0, "row_id", meta_test["row_id"].values)
+submission[PRIMARY_LABELS] = submission[PRIMARY_LABELS].astype(np.float32)
+
+expected_rows = len(test_paths) * N_WINDOWS
+assert len(submission) == expected_rows, f"Expected {expected_rows}, got {len(submission)}"
+assert submission.columns.tolist() == ["row_id"] + PRIMARY_LABELS
+assert not submission.isna().any().any()
+
+submission.to_csv("submission.csv", index=False)
+
+print("Saved submission.csv")
+print("Submission shape:", submission.shape)
+print(submission.iloc[:3, :8])

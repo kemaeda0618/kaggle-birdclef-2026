@@ -1,0 +1,5 @@
+# Cell 12 — Fit final prior tables on all labeled soundscapes
+final_prior_tables = fit_prior_tables(sc_clean.reset_index(drop=True), Y_SC)
+
+print("Built final prior tables for inference.")
+print("OOF baseline AUC used for stacker training:", baseline_oof_auc)

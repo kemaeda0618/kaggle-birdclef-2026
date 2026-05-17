@@ -1,0 +1,717 @@
+=== Cell 0 (markdown) ===
+## Setup
+Install dependencies and configure environment.
+
+=== Cell 1 (code) ===
+import os, glob
+td = None
+for c in ["/kaggle/input/notebooks/ashok205/tf-wheels/tf_wheels", "/kaggle/input/tf-wheels/tf_wheels", "/kaggle/input/tf-wheels"]:
+    if os.path.exists(c): td = c; break
+if td is None:
+    for r, d, fs in os.walk("/kaggle/input"):
+        for f in fs:
+            if f.endswith(".whl") and "tensorflow" in f.lower(): td = r; break
+        if td: break
+if td:
+    for w in sorted(glob.glob(os.path.join(td, '*.whl'))): os.system(f'pip install -q --no-deps "{w}"')
+
+
+# ONNX Runtime install
+import os as _os, glob as _g
+_ort_paths = _g.glob("/kaggle/input/**/onnxruntime-*.whl", recursive=True)
+if _ort_paths:
+    _os.system(f'pip install -q --no-deps "{_ort_paths[0]}"')
+    print(f"ONNX Runtime installed from {_ort_paths[0]}")
+else:
+    print("WARNING: onnxruntime wheel not found in /kaggle/input")
+
+
+=== Cell 2 (markdown) ===
+## Configuration
+Mode switch and hyperparameters.
+
+=== Cell 3 (code) ===
+# Cell 1 — Mode switch
+MODE = "submit" 
+
+assert MODE in {"train", "submit"}
+
+print("MODE =", MODE)
+
+=== Cell 4 (markdown) ===
+# BirdCLEF+ 2026 -- ProtoSSM v5: Maximum Ensemble
+
+## V17 -- 11 Targeted Improvements over V16 (0.924)
+
+### Additions over V16:
+1. **Larger model**: d_model 192→256, 3 SSM layers (more capacity)
+2. **Rank-aware post-processing**: Scale by file max prediction (2025 Rank 3)
+3. **Delta shift smoothing**: Temporal smoothing across windows (2025 Rank 1)
+4. **Per-class thresholds**: OOF-optimized decision thresholds per species
+5. All V16 improvements: Mixup, Focal loss, Cross-attention, SWA, TTA, per-taxon temp, file-level scaling
+
+Pipeline: `Perch -> ProtoSSM_v5(pass1) + MLP -> ensemble -> ResidualSSM(pass2) -> TTA -> per-taxon temp -> file-level scale -> rank-aware -> delta smooth -> per-class threshold -> final`
+
+=== Cell 6 (code) ===
+# ── V18 CFG UPGRADES ──────────────────────
+CFG["proto_ssm"] = {
+    "d_model": 320, "d_state": 32, "n_ssm_layers": 4,
+    "dropout": 0.12, "n_prototypes": 2, "n_sites": 20,
+    "meta_dim": 24, "use_cross_attn": True, "cross_attn_heads": 8,
+}
+CFG["proto_ssm_train"] = {
+    "n_epochs": 80, "lr": 8e-4, "weight_decay": 1e-3,
+    "val_ratio": 0.15, "patience": 20, "pos_weight_cap": 25.0,
+    "distill_weight": 0.15, "proto_margin": 0.15,
+    "label_smoothing": 0.03, "oof_n_splits": 5,
+    "mixup_alpha": 0.4, "focal_gamma": 2.5,
+    "swa_start_frac": 0.65, "swa_lr": 4e-4,
+    "use_cosine_restart": True, "restart_period": 20,
+}
+CFG["residual_ssm"] = {
+    "d_model": 128, "d_state": 16, "n_ssm_layers": 2,
+    "dropout": 0.1, "correction_weight": 0.35,
+    "n_epochs": 40, "lr": 8e-4, "patience": 12,
+}
+CFG["best_fusion"]["lambda_event"]         = 0.45
+CFG["best_fusion"]["lambda_texture"]       = 1.1
+CFG["best_fusion"]["lambda_proxy_texture"] = 0.9
+CFG["threshold_grid"] = [0.25,0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70]
+CFG["tta_shifts"]        = [0, 1, -1, 2, -2]
+CFG["rank_aware_power"]  = 0.4
+CFG["delta_shift_alpha"] = 0.20
+CFG["mlp_params"] = {
+    "hidden_layer_sizes": (256, 128), "activation": "relu",
+    "max_iter": 500, "early_stopping": True,
+    "validation_fraction": 0.15, "n_iter_no_change": 20,
+    "random_state": 42, "learning_rate_init": 5e-4, "alpha": 0.005,
+}
+CFG["frozen_best_probe"] = {
+    "pca_dim": 128, "min_pos": 5, "C": 0.75, "alpha": 0.45
+}
+print("✅ V18 CFG loaded")
+
+=== Cell 7 (code) ===
+
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
+def get_cosine_restart_scheduler(optimizer, restart_period=20):
+    return CosineAnnealingWarmRestarts(
+        optimizer, T_0=restart_period, T_mult=1, eta_min=1e-5
+    )
+
+print("✅ Cosine Restart Scheduler defined")
+
+=== Cell 8 (code) ===
+# ── STEP 3: Mixup + CutMix Hybrid ─
+def mixup_cutmix(emb, logits, labels, alpha=0.4, cutmix_prob=0.3):
+    B, T, D = emb.shape
+    lam = np.random.beta(alpha, alpha)
+    idx = torch.randperm(B)
+
+    if np.random.rand() < cutmix_prob:
+        # CutMix on time dimension
+        cut_len = max(1, int(T * (1 - lam)))
+        cut_start = np.random.randint(0, T - cut_len + 1)
+        new_emb = emb.clone()
+        new_emb[:, cut_start:cut_start+cut_len, :] = emb[idx, cut_start:cut_start+cut_len, :]
+        new_logits = logits.clone()
+        new_logits[:, cut_start:cut_start+cut_len, :] = logits[idx, cut_start:cut_start+cut_len, :]
+        lam_actual = 1.0 - cut_len / T
+        new_labels = lam_actual * labels + (1-lam_actual) * labels[idx]
+    else:
+        # Standard Mixup
+        new_emb    = lam * emb    + (1-lam) * emb[idx]
+        new_logits = lam * logits + (1-lam) * logits[idx]
+        new_labels = lam * labels + (1-lam) * labels[idx]
+
+    return new_emb, new_logits, new_labels
+
+print("✅ Mixup+CutMix defined")
+
+=== Cell 9 (code) ===
+# ── STEP 4: Species-Frequency Aware Focal Loss ──
+def build_class_freq_weights(Y_FULL, cap=10.0):
+    pos_count = Y_FULL.sum(axis=0).astype(np.float32) + 1.0
+    total     = Y_FULL.shape[0]
+    freq      = pos_count / total
+    weights   = 1.0 / (freq ** 0.5)
+    weights   = np.clip(weights, 1.0, cap)
+    weights   = weights / weights.mean()
+    return torch.tensor(weights, dtype=torch.float32)
+
+def species_focal_loss(logits, targets, class_weights, 
+                       gamma=2.5, label_smoothing=0.03):
+    targets_smooth = targets * (1 - label_smoothing) + label_smoothing / 2.0
+    bce    = F.binary_cross_entropy_with_logits(
+                 logits, targets_smooth, reduction="none")
+    pt     = torch.exp(-bce)
+    focal  = ((1 - pt) ** gamma) * bce
+    w      = class_weights.to(logits.device).unsqueeze(0)
+    return (focal * w).mean()
+
+print("✅ Species Focal Loss defined")
+
+=== Cell 10 (markdown) ===
+## Data Loading & Preprocessing
+Load competition data, parse labels, build truth matrices.
+
+=== Cell 11 (code) ===
+taxonomy = pd.read_csv(BASE / "taxonomy.csv")
+sample_sub = pd.read_csv(BASE / "sample_submission.csv")
+soundscape_labels = pd.read_csv(BASE / "train_soundscapes_labels.csv")
+
+PRIMARY_LABELS = sample_sub.columns[1:].tolist()
+N_CLASSES = len(PRIMARY_LABELS)
+
+taxonomy["primary_label"] = taxonomy["primary_label"].astype(str)
+soundscape_labels["primary_label"] = soundscape_labels["primary_label"].astype(str)
+
+def parse_soundscape_labels(x):
+    if pd.isna(x):
+        return []
+    return [t.strip() for t in str(x).split(";") if t.strip()]
+
+FNAME_RE = re.compile(r"BC2026_(?:Train|Test)_(\d+)_(S\d+)_(\d{8})_(\d{6})\.ogg")
+
+def parse_soundscape_filename(name):
+    m = FNAME_RE.match(name)
+    if not m:
+        return {
+            "file_id": None,
+            "site": None,
+            "date": pd.NaT,
+            "time_utc": None,
+            "hour_utc": -1,
+            "month": -1,
+        }
+    file_id, site, ymd, hms = m.groups()
+    dt = pd.to_datetime(ymd, format="%Y%m%d", errors="coerce")
+    return {
+        "file_id": file_id,
+        "site": site,
+        "date": dt,
+        "time_utc": hms,
+        "hour_utc": int(hms[:2]),
+        "month": int(dt.month) if pd.notna(dt) else -1,
+    }
+
+def union_labels(series):
+    return sorted(set(lbl for x in series for lbl in parse_soundscape_labels(x)))
+
+# Deduplicate duplicated rows and aggregate labels per 5s window
+sc_clean = (
+    soundscape_labels
+    .groupby(["filename", "start", "end"])["primary_label"]
+    .apply(union_labels)
+    .reset_index(name="label_list")
+)
+
+sc_clean["start_sec"] = pd.to_timedelta(sc_clean["start"]).dt.total_seconds().astype(int)
+sc_clean["end_sec"] = pd.to_timedelta(sc_clean["end"]).dt.total_seconds().astype(int)
+sc_clean["row_id"] = sc_clean["filename"].str.replace(".ogg", "", regex=False) + "_" + sc_clean["end_sec"].astype(str)
+
+meta = sc_clean["filename"].apply(parse_soundscape_filename).apply(pd.Series)
+sc_clean = pd.concat([sc_clean, meta], axis=1)
+
+# Fully-labeled files
+windows_per_file 
+
+=== Cell 12 (code) ===
+CLASS_WEIGHTS = build_class_freq_weights(Y_FULL_TRUTH)
+print("✅ Class weights built")
+
+=== Cell 13 (code) ===
+# ── STEP 5: Isotonic Calibration + Threshold Optimization ──
+from sklearn.isotonic import IsotonicRegression
+
+def calibrate_and_optimize_thresholds(oof_probs, Y_FULL, 
+                                       threshold_grid, n_windows=12):
+    n_samples, n_cls = oof_probs.shape
+    thresholds = np.full(n_cls, 0.5, dtype=np.float32)
+    n_files  = n_samples // n_windows
+    file_oof = oof_probs.reshape(n_files, n_windows, n_cls).max(axis=1)
+    file_y   = Y_FULL.reshape(n_files, n_windows, n_cls).max(axis=1)
+
+    for c in range(n_cls):
+        y_true, y_prob = file_y[:, c], file_oof[:, c]
+        if y_true.sum() < 3:
+            continue
+        try:
+            ir = IsotonicRegression(out_of_bounds="clip")
+            ir.fit(y_prob, y_true)
+            y_cal = ir.transform(y_prob)
+        except:
+            y_cal = y_prob
+
+        best_f1, best_t = 0.0, 0.5
+        for t in threshold_grid:
+            pred = (y_cal >= t).astype(int)
+            tp = ((pred==1)&(y_true==1)).sum()
+            fp = ((pred==1)&(y_true==0)).sum()
+            fn = ((pred==0)&(y_true==1)).sum()
+            prec = tp/(tp+fp+1e-8)
+            rec  = tp/(tp+fn+1e-8)
+            f1   = 2*prec*rec/(prec+rec+1e-8)
+            if f1 > best_f1:
+                best_f1, best_t = f1, t
+        thresholds[c] = best_t
+
+    print(f"Mean threshold: {thresholds.mean():.3f}")
+    print(f"Range: [{thresholds.min():.2f}, {thresholds.max():.2f}]")
+    return thresholds
+
+print("✅ Calibration + Threshold function defined")
+
+=== Cell 14 (code) ===
+# ── STEP 6: Ensemble Weight Sweep ──
+def sweep_ensemble_weight(oof_proto, oof_mlp, Y_FULL, 
+                          n_windows=12,
+                          candidates=np.arange(0.3, 0.8, 0.05)):
+    n_files = oof_proto.shape[0] // n_windows
+    file_y  = Y_FULL.reshape(n_files, n_windows, -1).max(axis=1)
+    best_auc, best_w = 0.0, 0.6
+
+    for w in candidates:
+        blended   = w * oof_proto + (1-w) * oof_mlp
+        file_pred = blended.reshape(n_files, n_windows, -1).max(axis=1)
+        try:
+            auc = macro_auc_skip_empty(file_y, file_pred)
+        except:
+            continue
+        if auc > best_auc:
+            best_auc, best_w = auc, w
+
+    print(f"Best ensemble weight (proto): {best_w:.2f}")
+    print(f"Best AUC: {best_auc:.5f}")
+    return best_w
+
+print("✅ Ensemble Weight Sweep defined")
+
+=== Cell 15 (markdown) ===
+## Model & Mapping
+Load Perch v2 model and build species-to-BirdClassifier mapping.
+
+=== Cell 17 (markdown) ===
+## Utilities
+Metrics, smoothing, and feature helpers.
+
+=== Cell 18 (code) ===
+# Cell 4 — Metrics and helper utilities
+def macro_auc_skip_empty(y_true, y_score):
+    keep = y_true.sum(axis=0) > 0
+    return roc_auc_score(y_true[:, keep], y_score[:, keep], average="macro")
+
+def smooth_cols_fixed12(scores, cols, alpha=0.35):
+    if alpha <= 0 or len(cols) == 0:
+        return scores.copy()
+
+    s = scores.copy()
+    assert len(s) % N_WINDOWS == 0, "Expected full-file blocks of 12 windows"
+    view = s.reshape(-1, N_WINDOWS, s.shape[1])
+
+    x = view[:, :, cols]
+    prev_x = np.concatenate([x[:, :1, :], x[:, :-1, :]], axis=1)
+    next_x = np.concatenate([x[:, 1:, :], x[:, -1:, :]], axis=1)
+
+    view[:, :, cols] = (1.0 - alpha) * x + 0.5 * alpha * (prev_x + next_x)
+    return s
+
+def smooth_events_fixed12(scores, cols, alpha=0.15):
+    """Soft max-pool context for event birds (Aves).
+    Uses local_max instead of average neighbor, preserving transient call detection."""
+    if alpha <= 0 or len(cols) == 0:
+        return scores.copy()
+    s = scores.copy()
+    assert len(s) % N_WINDOWS == 0
+    view = s.reshape(-1, N_WINDOWS, s.shape[1])
+    x = view[:, :, cols]
+    prev_x = np.concatenate([x[:, :1, :], x[:, :-1, :]], axis=1)
+    next_x = np.concatenate([x[:, 1:, :], x[:, -1:, :]], axis=1)
+    local_max = np.maximum(x, np.maximum(prev_x, next_x))
+    view[:, :, cols] = (1.0 - alpha) * x + alpha * local_max
+    return s
+
+def seq_features_1d(v):
+    """
+    v: shape (n_rows,), ordered as full-file blocks of 12 windows
+    Extended: tambah std_v untuk capture variance temporal dalam file
+    """
+    assert len(v) % N_WINDOWS == 0, "Expected full-file blocks of 12 windows"
+    x = v.reshape(-1, N_WINDOWS)
+
+    prev_v = np.concatenate([x[:, :1], x[:, :-1]], axis=1).reshape(-1)
+    next_v = np.concatenate([x[:, 1:], x[:, -1:]], axis=1).reshape(-1)
+    mean_v = np.repeat(x.mean(axis=1), N_WINDOWS)
+    max_v  = np.repeat(x.max(axis=1),  N_WINDOWS)
+    std_v  = np.repeat(x.std(axis=1),  N_WINDOWS)
+
+    return prev_v, next_v, mean_v, max_v, std_v
+
+=== Cell 20 (markdown) ===
+## Perch Inference Engine
+Core inference function with embedding extraction and genus proxies.
+
+=== Cell 22 (markdown) ===
+## Cache Management
+Load pre-computed Perch outputs or compute from scratch.
+
+=== Cell 24 (markdown) ===
+## Prior Tables
+Fit site/hour/month prior tables from labeled data.
+
+=== Cell 26 (markdown) ===
+## OOF Stacking
+Build honest out-of-fold base and prior meta-features.
+
+=== Cell 27 (code) ===
+# Cell 8 — Honest OOF base/prior meta-features (required for final stacker fit)
+def build_oof_base_prior(scores_full_raw, meta_full, sc_clean, Y_SC, n_splits=5, verbose=True):
+    groups_full = meta_full["filename"].to_numpy()
+    gkf = GroupKFold(n_splits=n_splits)
+
+    oof_base = np.zeros_like(scores_full_raw, dtype=np.float32)
+    oof_prior = np.zeros_like(scores_full_raw, dtype=np.float32)
+    fold_id = np.full(len(meta_full), -1, dtype=np.int16)
+
+    splits = list(gkf.split(scores_full_raw, groups=groups_full))
+    iterator = tqdm(splits, desc="OOF base/prior folds", disable=not verbose)
+
+    for fold, (tr_idx, va_idx) in enumerate(iterator, 1):
+        tr_idx = np.sort(tr_idx)
+        va_idx = np.sort(va_idx)
+
+        val_files = set(meta_full.iloc[va_idx]["filename"].tolist())
+
+        # Fold-safe prior tables: exclude all validation files
+        prior_mask = ~sc_clean["filename"].isin(val_files).values
+        prior_df_fold = sc_clean.loc[prior_mask].reset_index(drop=True)
+        Y_prior_fold = Y_SC[prior_mask]
+
+        tables = fit_prior_tables(prior_df_fold, Y_prior_fold)
+
+        va_base, va_prior = fuse_scores_with_tables(
+            scores_full_raw[va_idx],
+            sites=meta_full.iloc[va_idx]["site"].to_numpy(),
+            hours=meta_full.iloc[va_idx]["hour_utc"].to_numpy(),
+            tables=tables,
+        )
+
+        oof_base[va_idx] = va_base
+        oof_prior[va_idx] = va_prior
+        fold_id[va_idx] = fold
+
+    assert (fold_id >= 0).all()
+    return oof_base, oof_prior, fold_id
+
+OOF_META_CACHE = CFG["full_cache_work_dir"] / "full_oof_meta_features.npz"
+
+if OOF_META_CACHE.exists():
+    print("Loading cached OOF meta-features from:", OOF_META_CACHE)
+    arr = np.load(OOF_META_CACHE)
+    oof_base = arr["oof_base"].astype(np.float32)
+    oof_prior = arr["oof_prior"].astype(np.float32)
+    oof_fold_id = arr["fold_id"].astype(np.int16)
+else:
+    print("Building OOF meta-features...")
+    oof_base, oof_prior, oof_fold_id = build_oof_base_prior(
+
+=== Cell 28 (markdown) ===
+## Classwise Probes
+Per-class MLP/LogReg probes on PCA-compressed embeddings.
+
+=== Cell 30 (markdown) ===
+## ProtoSSM v2 Architecture
+Selective State Space Model with Prototypical Classification Head and Metadata Awareness.
+
+**Key insight**: Bird vocalizations have characteristic temporal patterns -- dawn chorus onset, species-specific calling rates, and territorial counter-singing dynamics. Current approaches treat each 5-second window independently, discarding this signal. ProtoSSM v2 models temporal dynamics through bidirectional selective state space models while incorporating site and hour metadata embeddings, per-class calibration bias, and prototypical metric learning in embedding space.
+
+=== Cell 32 (markdown) ===
+## ProtoSSM v2 Training
+Multi-task training with species BCE loss (label smoothing), prototypical contrastive loss, knowledge distillation from Perch logits, and taxonomic auxiliary loss. Includes 5-fold GroupKFold OOF cross-validation and ensemble weight optimization.
+
+=== Cell 34 (markdown) ===
+## Probe Tuning
+Grid search over probe hyperparameters (train mode only).
+
+=== Cell 35 (code) ===
+# Cell 10 — Probe tuning (train mode only)
+grid_results = None
+BEST_PROBE = None
+
+if CFG["run_probe_check"]:
+    probe_result = run_oof_embedding_probe(
+        scores_raw=scores_full_raw,
+        emb=emb_full,
+        meta_df=meta_full,
+        y_true=Y_FULL,
+        pca_dim=64,
+        min_pos=8,
+        C=0.25,
+        alpha=0.5,
+    )
+
+    print(f"Honest OOF baseline AUC: {probe_result['score_base']:.6f}")
+    print(f"Honest OOF embedding-probe AUC: {probe_result['score_final']:.6f}")
+    print(f"Delta: {probe_result['score_final'] - probe_result['score_base']:.6f}")
+
+    modeled_classes = np.where(probe_result["modeled_counts"] > 0)[0]
+    print("Modeled classes:", len(modeled_classes))
+    print([PRIMARY_LABELS[i] for i in modeled_classes[:20]])
+
+if CFG["run_probe_grid"]:
+    param_grid = [
+        {"pca_dim": 32, "min_pos": 8,  "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 64, "min_pos": 8,  "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 64, "min_pos": 8,  "C": 0.25, "alpha": 0.5},
+        {"pca_dim": 64, "min_pos": 12, "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 96, "min_pos": 8,  "C": 0.25, "alpha": 0.4},
+        {"pca_dim": 64, "min_pos": 8,  "C": 0.50, "alpha": 0.4},
+    ]
+
+    results = []
+    for params in tqdm(param_grid, desc="Probe grid", disable=not CFG["verbose"]):
+        out = run_oof_embedding_probe(
+            scores_raw=scores_full_raw,
+            emb=emb_full,
+            meta_df=meta_full,
+            y_true=Y_FULL,
+            pca_dim=params["pca_dim"],
+            min_pos=params["min_pos"],
+            C=params["C"],
+            alpha=params["alpha"],
+        )
+        results.append({
+            **params,
+            "baseline_oof_auc": out["score_base"],
+            "probe_oof_auc": out["score_final"],
+            "delta": out["score_final"] - out["score_base"],
+            "n_modeled_classes": int((out["modeled_counts"] > 0).sum()),
+        })
+
+    grid_results = pd.DataFrame(results).sort_values("probe_oof_auc", ascending=False).re
+
+=== Cell 36 (markdown) ===
+## Final Probe Fit
+Freeze probe params and fit final models on all data.
+
+=== Cell 37 (code) ===
+# Cell 11 — Freeze final probe params
+if BEST_PROBE is None:
+    BEST_PROBE = CFG["frozen_best_probe"]
+
+print("Final BEST_PROBE =", BEST_PROBE)
+
+# Optional — rerun best OOF probe once for diagnostics / caching
+BEST_OOF_RESULT = None
+
+if MODE == "train":
+    BEST_OOF_RESULT = run_oof_embedding_probe(
+        scores_raw=scores_full_raw,
+        emb=emb_full,
+        meta_df=meta_full,
+        y_true=Y_FULL,
+        pca_dim=int(BEST_PROBE["pca_dim"]),
+        min_pos=int(BEST_PROBE["min_pos"]),
+        C=float(BEST_PROBE["C"]),
+        alpha=float(BEST_PROBE["alpha"]),
+    )
+
+    print(f"Honest OOF baseline AUC (BEST_PROBE rerun): {BEST_OOF_RESULT['score_base']:.6f}")
+    print(f"Honest OOF probe AUC   (BEST_PROBE rerun): {BEST_OOF_RESULT['score_final']:.6f}")
+
+=== Cell 38 (code) ===
+# Cell 12 — Fit final prior tables on all labeled soundscapes
+final_prior_tables = fit_prior_tables(sc_clean.reset_index(drop=True), Y_SC)
+
+print("Built final prior tables for inference.")
+print("OOF baseline AUC used for stacker training:", baseline_oof_auc)
+
+=== Cell 39 (code) ===
+# Cell 13 — Fit embedding scaler + PCA on all trusted full windows
+emb_scaler = StandardScaler()
+emb_full_scaled = emb_scaler.fit_transform(emb_full)
+
+n_comp = min(
+    int(BEST_PROBE["pca_dim"]),
+    emb_full_scaled.shape[0] - 1,
+    emb_full_scaled.shape[1]
+)
+
+emb_pca = PCA(n_components=n_comp)
+Z_FULL = emb_pca.fit_transform(emb_full_scaled).astype(np.float32)
+
+print("emb_full:", emb_full.shape)
+print("Z_FULL:", Z_FULL.shape)
+print("Explained variance ratio sum:", emb_pca.explained_variance_ratio_.sum())
+
+=== Cell 40 (markdown) ===
+## ProtoSSM Training
+Instantiate ProtoSSM, initialize prototypes from class means, set up taxonomic head, and train with multi-task loss.
+
+
+=== Cell 42 (markdown) ===
+## Residual SSM -- Second-Pass Boosting
+Train a lightweight SSM on the residuals (errors) of the first-pass ProtoSSM + MLP ensemble.
+The residual model learns systematic correction patterns: species that are consistently
+over/under-predicted, temporal error patterns, and site-specific biases.
+
+
+=== Cell 44 (code) ===
+# Cell 15 — Diagnostics
+if MODE == "train":
+    if grid_results is not None:
+        best_row = grid_results.iloc[0]
+        print(f"Best honest OOF probe AUC: {best_row['probe_oof_auc']:.6f}")
+        print(f"Delta over honest OOF baseline: {best_row['delta']:.6f}")
+else:
+    print("Skipping train diagnostics in submit mode.")
+
+=== Cell 45 (markdown) ===
+## Test Inference
+Run Perch on hidden test soundscapes.
+
+=== Cell 46 (code) ===
+# Cell 16 — Infer Perch on hidden test with embeddings
+test_paths = sorted((BASE / "test_soundscapes").glob("*.ogg"))
+
+if len(test_paths) == 0:
+    print(f"Hidden test not mounted. Dry-run on first {CFG['dryrun_n_files']} train soundscapes.")
+    test_paths = sorted((BASE / "train_soundscapes").glob("*.ogg"))[:CFG["dryrun_n_files"]]
+else:
+    print(f"Hidden test files: {len(test_paths)}")
+
+# [MODIFIED - Opsi 3] Gunakan proxy_reduce terbaik dari grid search (bukan hardcode "max")
+meta_test, scores_test_raw, emb_test = infer_perch_onnx(test_paths, verbose=True)
+print(f"proxy_reduce used for test inference: {CFG['proxy_reduce']!r}")
+
+print("meta_test:", meta_test.shape)
+print("scores_test_raw:", scores_test_raw.shape)
+print("emb_test:", emb_test.shape)
+
+
+=== Cell 47 (markdown) ===
+## Score Fusion -- ProtoSSM v2 + MLP Ensemble
+Combine ProtoSSM v2 temporal predictions with MLP probe scores using OOF-optimized ensemble weight. Includes metadata-aware inference and comprehensive diagnostics.
+
+=== Cell 49 (markdown) ===
+## Submission
+Temperature scaling and CSV generation.
+
+=== Cell 50 (code) ===
+# Cell 18 — V17: Full post-processing pipeline
+
+# V17: Optimize per-class thresholds from OOF (train mode only)
+PER_CLASS_THRESHOLDS = np.full(N_CLASSES, 0.5, dtype=np.float32)
+if MODE == "train" and oof_proto_flat is not None:
+    print("Optimizing per-class thresholds from OOF...")
+    best_thresholds, best_scores = optimize_per_class_thresholds(
+        oof_proto_flat, Y_FULL, n_windows=N_WINDOWS, thresholds=CFG["threshold_grid"]
+    )
+    PER_CLASS_THRESHOLDS = best_thresholds.astype(np.float32)
+    print(f"  Mean threshold: {best_thresholds.mean():.3f}")
+    print(f"  Threshold range: [{best_thresholds.min():.2f}, {best_thresholds.max():.2f}]")
+    print(f"  Mean F1 (proxy): {best_scores.mean():.3f}")
+    
+    # Show classes with extreme thresholds
+    high_t = np.where(best_thresholds > 0.6)[0]
+    low_t = np.where(best_thresholds < 0.4)[0]
+    if len(high_t) > 0:
+        print(f"  High threshold classes (>0.6): {len(high_t)}")
+    if len(low_t) > 0:
+        print(f"  Low threshold classes (<0.4): {len(low_t)}")
+else:
+    # Submit mode: use default 0.5 thresholds for all classes
+    print("Using default per-class thresholds (0.5) for submit mode")
+
+
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
+
+# --- Step 1: Per-taxon temperature scaling ---
+temp_cfg = CFG["temperature"]
+T_AVES = temp_cfg["aves"]
+T_TEXTURE = temp_cfg["texture"]
+
+class_temperatures = np.ones(N_CLASSES, dtype=np.float32) * T_AVES
+for ci, label in enumerate(PRIMARY_LABELS):
+    cn = CLASS_NAME_MAP.get(label, "Aves")
+    if cn in TEXTURE_TAXA:
+        class_temperatures[ci] = T_TEXTURE
+
+print(f"\nPer-taxon temperature: Aves={T_AVES}, Texture={T_TEXTURE}")
+
+scaled_scores = final_test_scores / class_temperatures[None, :]
+probs = sigmoid(scaled_scores)
+
+# --- Step 2: File-level confidence scaling ---
+top_k = CFG.get("file_level_top_k", 0)
+if top_k > 0:
+    print(f"Applying file-level confidence scaling (top_k={top_k})")
+    probs = file_level_confidence_scale(probs, n_windows
+
+=== Cell 52 (code) ===
+# --- Build submission ---
+submission = pd.DataFrame(probs, columns=PRIMARY_LABELS)
+submission.insert(0, "row_id", meta_test["row_id"].values)
+submission[PRIMARY_LABELS] = submission[PRIMARY_LABELS].astype(np.float32)
+
+expected_rows = len(test_paths) * N_WINDOWS
+assert len(submission) == expected_rows, f"Expected {expected_rows}, got {len(submission)}"
+assert submission.columns.tolist() == ["row_id"] + PRIMARY_LABELS
+assert not submission.isna().any().any()
+
+submission.to_csv("submission.csv", index=False)
+
+print("\nSaved submission.csv")
+print("Submission shape:", submission.shape)
+print(f"Final score range: {probs.min():.6f} to {probs.max():.6f}")
+print(f"Final mean: {probs.mean():.4f}")
+print(submission.iloc[:3, :8])
+
+=== Cell 53 (code) ===
+# Cell 19 — Final Diagnostics and Logging
+
+# Save comprehensive logs
+wall_time = time.time() - _WALL_START
+LOGS["wall_time_seconds"] = wall_time
+LOGS["temperature"] = CFG["temperature"]
+LOGS["ensemble_weight_proto"] = ENSEMBLE_WEIGHT_PROTO
+LOGS["n_classes"] = N_CLASSES
+LOGS["n_windows"] = N_WINDOWS
+LOGS["cfg_proto_ssm"] = CFG["proto_ssm"]
+LOGS["cfg_proto_ssm_train"] = {k: v for k, v in CFG["proto_ssm_train"].items() if not isinstance(v, (np.ndarray,))}
+LOGS["v17_improvements"] = [
+    "d_model_256", "n_ssm_layers_3", "cross_attention", "mixup", "focal_loss", "swa",
+    "per_taxon_temperature", "file_level_scaling", "tta", "rank_aware_scaling",
+    "delta_shift_smooth", "per_class_thresholds"
+]
+LOGS["per_class_thresholds"] = PER_CLASS_THRESHOLDS.tolist()
+
+try:
+    with open("/kaggle/working/v17_logs.json", "w") as f:
+        json.dump(LOGS, f, indent=2, default=str)
+    print("Saved /kaggle/working/v17_logs.json")
+except Exception as e:
+    print(f"Warning: could not save logs: {e}")
+
+if MODE == "train":
+    print("=== ProtoSSM v5 Training Summary ===")
+    print(f"Parameters: {model.count_parameters():,}")
+    print(f"d_model: {CFG['proto_ssm']['d_model']}, n_ssm_layers: {CFG['proto_ssm']['n_ssm_layers']}")
+    print(f"Wall time: {wall_time:.1f}s")
+    print(f"OOF CV time: {LOGS.get('oof_time', 0):.1f}s")
+    print(f"Final model training time: {LOGS.get('train_time_final', 0):.1f}s")
+    print(f"Final train loss: {train_history['train_loss'][-1]:.4f}")
+    print(f"Best val loss: {min(train_history['val_loss']):.4f}")
+    print(f"Best val AUC: {max(train_history['val_auc']):.4f}")
+
+    print(f"\n=== OOF Results ===")
+    print(f"ProtoSSM OOF AUC: {LOGS.get('oof_auc_proto', 0):.4f}")
+    print(f"MLP-only OOF AUC: {LOGS.get('mlp_only_auc', 0):.4f}")
+    print(f"Ensemble OOF AUC: {LOGS.get('ensemble_auc', 0):.4f}")
+    print(f"Optimized ProtoSSM weight: {ENSEMBLE_WEIGHT_PROTO:.2f}")
+
+    with torch.no_grad():
+        alphas = torch.sigmoid(model.fusion_alpha).numpy()
+  

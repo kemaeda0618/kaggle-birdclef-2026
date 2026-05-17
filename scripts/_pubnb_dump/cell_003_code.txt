@@ -1,0 +1,6 @@
+# Cell 1 — Mode switch
+MODE = "submit" 
+
+assert MODE in {"train", "submit"}
+
+print("MODE =", MODE)

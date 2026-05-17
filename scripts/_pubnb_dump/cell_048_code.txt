@@ -1,0 +1,130 @@
+# Score Fusion: ProtoSSM v4 + MLP Probes + Priors + TTA (OOF-optimized weight)
+
+# --- Step 1: ProtoSSM v4 inference on test with TTA ---
+emb_test_files, test_file_list = reshape_to_files(emb_test, meta_test)
+logits_test_files, _ = reshape_to_files(scores_test_raw, meta_test)
+
+# Build test metadata
+test_site_ids, test_hours = get_file_metadata(meta_test, test_file_list, site_to_idx, CFG["proto_ssm"]["n_sites"])
+
+emb_test_tensor = torch.tensor(emb_test_files, dtype=torch.float32)
+logits_test_tensor = torch.tensor(logits_test_files, dtype=torch.float32)
+test_site_tensor = torch.tensor(test_site_ids, dtype=torch.long)
+test_hour_tensor = torch.tensor(test_hours, dtype=torch.long)
+
+# V16: TTA — average predictions from shifted temporal sequences
+model.eval()
+tta_shifts = CFG.get("tta_shifts", [0])
+if len(tta_shifts) > 1:
+    print(f"Running TTA with shifts: {tta_shifts}")
+    proto_scores = temporal_shift_tta(
+        emb_test_files, logits_test_files, model,
+        test_site_ids, test_hours, shifts=tta_shifts
+    )
+else:
+    with torch.no_grad():
+        proto_out, _, h_test = model(emb_test_tensor, logits_test_tensor,
+                                      site_ids=test_site_tensor, hours=test_hour_tensor)
+        proto_scores = proto_out.numpy()
+
+# Flatten back to (n_rows, n_classes)
+proto_scores_flat = proto_scores.reshape(-1, N_CLASSES).astype(np.float32)
+
+print(f"ProtoSSM v4 test scores: {proto_scores_flat.shape}")
+print(f"Score range: {proto_scores_flat.min():.3f} to {proto_scores_flat.max():.3f}")
+
+# --- Step 2: Prior-fused base scores ---
+test_base_scores, test_prior_scores = fuse_scores_with_tables(
+    scores_test_raw,
+    sites=meta_test["site"].to_numpy(),
+    hours=meta_test["hour_utc"].to_numpy(),
+    tables=final_prior_tables,
+)
+
+# --- Step 3: MLP probe scores ---
+emb_test_scaled = emb_scaler.transform(emb_test)
+Z_TEST = emb_pca.transform(emb_test_scaled).astype(np.float32)
+
+mlp_scores = test_base_scores.copy()
+
+for cls_idx, clf in probe_models.items():
+    X_cls_test = build_class_features(
+        Z_TEST,
+        raw_col=scores_test_raw[:, cls_idx],
+        prior_col=test_prior_scores[:, cls_idx],
+        base_col=test_base_scores[:, cls_idx],
+    )
+
+    if hasattr(clf, "predict_proba"):
+        prob = clf.predict_proba(X_cls_test)[:, 1].astype(np.float32)
+        pred = np.log(prob + 1e-7) - np.log(1 - prob + 1e-7)
+    else:
+        pred = clf.decision_function(X_cls_test).astype(np.float32)
+
+    alpha = float(CFG["frozen_best_probe"]["alpha"])
+    mlp_scores[:, cls_idx] = (1.0 - alpha) * test_base_scores[:, cls_idx] + alpha * pred
+
+# --- Step 4: Ensemble fusion with OOF-optimized weight ---
+print(f"\nUsing OOF-optimized ensemble weight: {ENSEMBLE_WEIGHT_PROTO:.2f}")
+
+final_test_scores = (
+    ENSEMBLE_WEIGHT_PROTO * proto_scores_flat +
+    (1.0 - ENSEMBLE_WEIGHT_PROTO) * mlp_scores
+).astype(np.float32)
+
+# --- Step 5: Residual SSM correction (second pass) ---
+if res_model is not None and CORRECTION_WEIGHT > 0:
+    first_pass_test_files, _ = reshape_to_files(final_test_scores, meta_test)
+    first_pass_test_t = torch.tensor(first_pass_test_files, dtype=torch.float32)
+
+    res_model.eval()
+    with torch.no_grad():
+        test_correction = res_model(
+            emb_test_tensor, first_pass_test_t,
+            site_ids=test_site_tensor, hours=test_hour_tensor
+        ).numpy()
+
+    test_correction_flat = test_correction.reshape(-1, N_CLASSES).astype(np.float32)
+
+    print(f"\nResidual correction: mean_abs={np.abs(test_correction_flat).mean():.4f}, "
+          f"max={np.abs(test_correction_flat).max():.4f}")
+
+    final_test_scores = final_test_scores + CORRECTION_WEIGHT * test_correction_flat
+    print(f"Final scores (after residual): range [{final_test_scores.min():.3f}, {final_test_scores.max():.3f}]")
+else:
+    print("\nResidual correction: SKIPPED")
+
+print(f"Final scores: {final_test_scores.shape}")
+
+# --- Logging ---
+test_logs = {}
+window_scores = proto_scores.reshape(-1, N_WINDOWS, N_CLASSES).mean(axis=(0, 2))
+test_logs["window_position_scores"] = window_scores.tolist()
+print(f"\nWindow position mean scores: {[f'{s:.3f}' for s in window_scores]}")
+
+if hasattr(model, 'class_to_family'):
+    taxon_scores = defaultdict(list)
+    idx_to_fam = {v: k for k, v in fam_to_idx.items()}
+    for ci in range(N_CLASSES):
+        fam_idx = class_to_family[ci]
+        fam_name = idx_to_fam.get(fam_idx, f"group_{fam_idx}")
+        taxon_scores[fam_name].append(float(proto_scores_flat[:, ci].mean()))
+
+    test_logs["taxon_mean_scores"] = {k: float(np.mean(v)) for k, v in taxon_scores.items()}
+    for k, v in sorted(taxon_scores.items(), key=lambda x: -np.mean(x[1]))[:5]:
+        print(f"  {k}: mean_score={np.mean(v):.4f} (n_classes={len(v)})")
+
+with torch.no_grad():
+    p_norm = F.normalize(model.prototypes, dim=-1)
+    cos_sim = torch.matmul(p_norm, p_norm.T)
+    cos_sim.fill_diagonal_(0)
+    top_sims = cos_sim.max(dim=1)[0].numpy()
+    test_logs["prototype_max_similarity"] = {
+        "mean": float(top_sims.mean()),
+        "max": float(top_sims.max()),
+        "min": float(top_sims.min()),
+    }
+    print(f"\nPrototype nearest-neighbor similarity: mean={top_sims.mean():.3f}, max={top_sims.max():.3f}")
+
+
+LOGS["test_inference"] = test_logs

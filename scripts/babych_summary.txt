@@ -1,0 +1,66 @@
+================================================================================
+NB: Babych 2025 inference (本人)
+path: experiment/exp010/notebook/_reference_babych/birdclef2025-1st-place-inference/birdclef2025-1st-place-inference.ipynb
+================================================================================
+Total cells: 17
+
+Cell summaries:
+  [  0 mark] # Install openvino libs
+  [  1 code] !pip install /kaggle/input/runtimes-onnx-openvino/openvino/openvino_telemetry-2025.1.0-py3-none-any.whl --no-index --find-links /kaggle/inpu
+  [  2 mark] # Imports
+  [  3 code] import os
+  [  4 mark] # SED Model Architecture
+  [  5 code] def gem_freq(x, p=3, eps=1e-6):
+  [  6 mark] # Inference Dataset, Inference Engine
+  [  7 code] class InferenceDataset:
+  [  8 mark] # Configs
+  [  9 code] def get_multilabel_to_train_labels(multilabel_label2ind, train_label2ind):
+  [ 10 mark] # Data Loading
+  [ 11 code] DATA_PATH = "/kaggle/input/birdclef-2025"
+  [ 12 code] def load_all_samples(test_df):
+  [ 13 mark] # Models building
+  [ 14 code] def prepare_models(models_group, models_dirs, ov_models_dir=None):
+  [ 15 mark] # Inference
+  [ 16 code] def gauss_convolve(arr):
+
+================================================================================
+NB: kosuke BC2026 fork
+path: experiment/exp010/notebook/_reference_babych/birdclef-2026-babych-2025-fork/birdclef-2026-babych-2025-fork.ipynb
+================================================================================
+Total cells: 21
+
+Cell summaries:
+  [  0 mark] # Install openvino libs
+  [  1 code] !pip install /kaggle/input/runtimes-onnx-openvino/openvino/openvino_telemetry-2025.1.0-py3-none-any.whl --no-index --find-links /kaggle/inpu
+  [  2 mark] # Imports
+  [  3 code] # import os
+  [  4 mark] # SED Model Architecture
+  [  5 code] # def gem_freq(x, p=3, eps=1e-6):
+  [  6 mark] # Inference Dataset, Inference Engine
+  [  7 code] # class InferenceDataset:
+  [  8 mark] # Configs
+  [  9 code] # def get_multilabel_to_train_labels(multilabel_label2ind, train_label2ind):
+  [ 10 mark] # Data Loading
+  [ 11 code] # DATA_PATH = "/kaggle/input/birdclef-2026"
+  [ 12 code] # def load_all_samples(test_df):
+  [ 13 mark] # Models building
+  [ 14 code] # def prepare_models(models_group, models_dirs, ov_models_dir=None):
+  [ 15 mark] # Inference
+  [ 16 code] # def gauss_convolve(arr):
+  [ 17 code] # ================================
+  [ 18 code] 
+  [ 19 code] 
+  [ 20 code] 
+
+================================================================================
+NB: emanuellcs BC2026 target-domain pseudo
+path: experiment/exp010/notebook/_reference_babych/birdclef-2026-target-domain-pseudo-labeling/birdclef-2026-target-domain-pseudo-labeling.ipynb
+================================================================================
+Total cells: 4
+
+Cell summaries:
+  [  0 mark] # 🦜 BirdCLEF 2026 - Target-Domain Pseudo-Labeling
+  [  1 code] !pip install -q onnxruntime-gpu
+  [  2 code] %%writefile /kaggle/working/pseudo_worker.py
+  [  3 code] import sys
+

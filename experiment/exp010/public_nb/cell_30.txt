@@ -1,0 +1,4 @@
+## ProtoSSM v2 Architecture
+Selective State Space Model with Prototypical Classification Head and Metadata Awareness.
+
+**Key insight**: Bird vocalizations have characteristic temporal patterns -- dawn chorus onset, species-specific calling rates, and territorial counter-singing dynamics. Current approaches treat each 5-second window independently, discarding this signal. ProtoSSM v2 models temporal dynamics through bidirectional selective state space models while incorporating site and hour metadata embeddings, per-class calibration bias, and prototypical metric learning in embedding space.

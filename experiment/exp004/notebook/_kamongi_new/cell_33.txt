@@ -1,0 +1,5 @@
+MARKDOWN CELL 33
+================================================================================
+
+## ProtoSSM Training
+Instantiate ProtoSSM, initialize prototypes from class means, set up taxonomic head, and train with multi-task loss.

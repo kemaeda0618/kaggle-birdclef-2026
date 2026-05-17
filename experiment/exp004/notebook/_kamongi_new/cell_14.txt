@@ -1,0 +1,52 @@
+CODE CELL 14
+================================================================================
+
+# YAMNet embedding extraction
+def extract_yamnet_embeddings(paths, batch_files=16, verbose=True):
+    """Extract YAMNet 1024-d embeddings for soundscape files.
+    Reads audio at 32kHz, downsamples to 16kHz, processes 5s windows.
+    Returns (n_files * N_WINDOWS, 1024) array."""
+
+    if not _YAMNET_AVAILABLE:
+        # Return zeros if YAMNet not available
+        n_rows = len(paths) * N_WINDOWS
+        print("YAMNet not available, returning zero embeddings")
+        return np.zeros((n_rows, 1024), dtype=np.float32)
+
+    paths = [Path(p) for p in paths]
+    n_files = len(paths)
+    n_rows = n_files * N_WINDOWS
+    embeddings = np.zeros((n_rows, 1024), dtype=np.float32)
+
+    write_row = 0
+    iterator = range(n_files)
+    if verbose:
+        iterator = tqdm(iterator, desc="YAMNet embeddings")
+
+    for fi in iterator:
+        path = paths[fi]
+        y_32k = read_soundscape_60s(path)
+        # Downsample 32kHz -> 16kHz (simple decimation)
+        y_16k = y_32k[::2].astype(np.float32)
+
+        # Process each 5s window
+        samples_per_window_16k = 5 * 16000  # 80000
+        for wi in range(N_WINDOWS):
+            start = wi * samples_per_window_16k
+            end = start + samples_per_window_16k
+            window = y_16k[start:end]
+
+            if len(window) < samples_per_window_16k:
+                window = np.pad(window, (0, samples_per_window_16k - len(window)))
+
+            # YAMNet inference
+            scores, emb, spec = yamnet_model(window)
+            # Mean-pool across frames to get 1024-d
+            embeddings[write_row] = emb.numpy().mean(axis=0).astype(np.float32)
+            write_row += 1
+
+        del y_32k, y_16k
+
+    return embeddings
+
+print("YAMNet embedding extraction function defined.")

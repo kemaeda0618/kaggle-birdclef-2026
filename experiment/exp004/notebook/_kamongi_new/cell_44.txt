@@ -1,0 +1,72 @@
+CODE CELL 44
+================================================================================
+
+# Cell 19 — Final Diagnostics and Logging
+
+# Save comprehensive logs
+wall_time = time.time() - _WALL_START
+LOGS["wall_time_seconds"] = wall_time
+LOGS["temperature"] = TEMPERATURE
+LOGS["ensemble_weight_proto"] = ENSEMBLE_WEIGHT_PROTO
+LOGS["n_classes"] = N_CLASSES
+LOGS["n_windows"] = N_WINDOWS
+LOGS["cfg_proto_ssm"] = CFG["proto_ssm"]
+LOGS["cfg_proto_ssm_train"] = {k: v for k, v in CFG["proto_ssm_train"].items() if not isinstance(v, (np.ndarray,))}
+
+try:
+    with open("/kaggle/working/v14_logs.json", "w") as f:
+        json.dump(LOGS, f, indent=2, default=str)
+    print("Saved /kaggle/working/v14_logs.json")
+except Exception as e:
+    print(f"Warning: could not save logs: {e}")
+
+if MODE == "train":
+    print("=== ProtoSSM v2 Training Summary ===")
+    print(f"Parameters: {model.count_parameters():,}")
+    print(f"Wall time: {wall_time:.1f}s")
+    print(f"OOF CV time: {LOGS.get('oof_time', 0):.1f}s")
+    print(f"Final model training time: {LOGS.get('train_time_final', 0):.1f}s")
+    print(f"Final train loss: {train_history['train_loss'][-1]:.4f}")
+    print(f"Best val loss: {min(train_history['val_loss']):.4f}")
+    print(f"Best val AUC: {max(train_history['val_auc']):.4f}")
+
+    print(f"\n=== OOF Results ===")
+    print(f"ProtoSSM OOF AUC: {LOGS.get('oof_auc_proto', 0):.4f}")
+    print(f"MLP-only OOF AUC: {LOGS.get('mlp_only_auc', 0):.4f}")
+    print(f"Ensemble OOF AUC: {LOGS.get('ensemble_auc', 0):.4f}")
+    print(f"Optimized ProtoSSM weight: {ENSEMBLE_WEIGHT_PROTO:.2f}")
+
+    # Fusion alpha analysis
+    with torch.no_grad():
+        alphas = torch.sigmoid(model.fusion_alpha).numpy()
+        high_proto = (alphas > 0.5).sum()
+        high_perch = (alphas <= 0.5).sum()
+        print(f"\nFusion alpha distribution (final model):")
+        print(f"  ProtoSSM-dominant (alpha>0.5): {high_proto} classes")
+        print(f"  Perch-dominant (alpha<=0.5): {high_perch} classes")
+
+    # Per-class alpha analysis
+    print(f"\nPer-class calibration bias stats:")
+    with torch.no_grad():
+        cb = model.class_bias.numpy()
+        print(f"  mean={cb.mean():.4f} std={cb.std():.4f} min={cb.min():.4f} max={cb.max():.4f}")
+
+    print(f"\nMLP probes: {len(probe_models)} classes")
+
+    # Top/bottom classes by OOF AUC
+    if "per_class_auc_proto" in LOGS and LOGS["per_class_auc_proto"]:
+        sorted_aucs = sorted(LOGS["per_class_auc_proto"].items(), key=lambda x: x[1], reverse=True)
+        print(f"\nTop 10 classes by ProtoSSM OOF AUC:")
+        for label, auc in sorted_aucs[:10]:
+            print(f"  {label}: {auc:.4f}")
+        print(f"\nBottom 10 classes by ProtoSSM OOF AUC:")
+        for label, auc in sorted_aucs[-10:]:
+            print(f"  {label}: {auc:.4f}")
+
+    print("\nSubmission probability stats:")
+    print(submission.iloc[:, 1:].stack().describe())
+else:
+    print("Submit mode completed.")
+    print(f"ProtoSSM v2 parameters: {model.count_parameters():,}")
+    print(f"Ensemble weight: {ENSEMBLE_WEIGHT_PROTO:.2f}")
+    print(f"Wall time: {wall_time:.1f}s")

@@ -1,0 +1,21 @@
+import os, glob
+td = None
+for c in ["/kaggle/input/notebooks/ashok205/tf-wheels/tf_wheels", "/kaggle/input/tf-wheels/tf_wheels", "/kaggle/input/tf-wheels"]:
+    if os.path.exists(c): td = c; break
+if td is None:
+    for r, d, fs in os.walk("/kaggle/input"):
+        for f in fs:
+            if f.endswith(".whl") and "tensorflow" in f.lower(): td = r; break
+        if td: break
+if td:
+    for w in sorted(glob.glob(os.path.join(td, '*.whl'))): os.system(f'pip install -q --no-deps "{w}"')
+
+
+# ONNX Runtime install
+import os as _os, glob as _g
+_ort_paths = _g.glob("/kaggle/input/**/onnxruntime-*.whl", recursive=True)
+if _ort_paths:
+    _os.system(f'pip install -q --no-deps "{_ort_paths[0]}"')
+    print(f"ONNX Runtime installed from {_ort_paths[0]}")
+else:
+    print("WARNING: onnxruntime wheel not found in /kaggle/input")

@@ -1,0 +1,180 @@
+# Cell 2 — Imports and run config
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+import gc
+import json
+import re
+import time
+import warnings
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import soundfile as sf
+import tensorflow as tf
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from sklearn.decomposition import PCA
+from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import roc_auc_score
+try:
+    from lightgbm import LGBMClassifier
+    _LGBM_AVAILABLE = True
+except ImportError:
+    _LGBM_AVAILABLE = False
+from sklearn.model_selection import GroupKFold
+from sklearn.preprocessing import StandardScaler
+
+from tqdm.auto import tqdm
+
+warnings.filterwarnings("ignore")
+tf.experimental.numpy.experimental_enable_numpy_behavior()
+
+_WALL_START = time.time()
+
+BASE = Path("/kaggle/input/competitions/birdclef-2026")
+MODEL_DIR = Path("/kaggle/input/models/google/bird-vocalization-classifier/tensorflow2/perch_v2_cpu/1")
+
+SR = 32000
+WINDOW_SEC = 5
+WINDOW_SAMPLES = SR * WINDOW_SEC
+FILE_SAMPLES = 60 * SR
+N_WINDOWS = 12
+
+DEVICE = torch.device("cpu")  # Competition constraint
+
+LOGS = {}  # Comprehensive logging dict
+
+CFG = {
+    "mode": MODE,
+    "verbose": MODE == "train",
+
+    # expensive research blocks
+    "run_oof_baseline": MODE == "train",
+    "run_probe_check": False,
+    "run_probe_grid": False,
+
+    # inference
+    "batch_files": 16,
+    "proxy_reduce_grid": ["max", "mean"],
+    "proxy_reduce": "max",
+    "run_proxy_reduce_grid": False,
+    "dryrun_n_files": 50 if MODE == "train" else 20,
+
+    # cache behavior
+    "require_full_cache_in_submit": False,
+    "full_cache_input_dir": Path("/kaggle/input/datasets/jaejohn/perch-meta"),
+    "full_cache_work_dir": Path("/kaggle/working/perch_cache"),
+
+    # frozen baseline fusion params
+    "best_fusion": {
+        "lambda_event": 0.4,
+        "lambda_texture": 1.0,
+        "lambda_proxy_texture": 0.8,
+        "smooth_texture": 0.35,
+        "smooth_event": 0.15,
+    },
+
+    # V17: ProtoSSM v5 — LARGER model
+    "proto_ssm": {
+        "d_model": 256,               # V17: increased from 128→256
+        "d_state": 16,
+        "n_ssm_layers": 3,            # V17: increased from 2→3
+        "dropout": 0.15,
+        "n_prototypes": 1,
+        "n_sites": 20,
+        "meta_dim": 16,
+        "use_cross_attn": True,
+        "cross_attn_heads": 4,
+    },
+
+    # ProtoSSM v5 training
+    "proto_ssm_train": {
+        "n_epochs": 60 if MODE == "train" else 40,   # ← was always 60,
+        "lr": 1e-3,
+        "weight_decay": 2e-3,
+        "val_ratio": 0.15,
+        "patience": 15  if MODE == "train" else 8,    # ← was always 15
+        "pos_weight_cap": 30.0,
+        "distill_weight": 0.1,
+        "proto_margin": 0.1,
+        "label_smoothing": 0.02,
+        "oof_n_splits": 3,
+        "mixup_alpha": 0.3,
+        "focal_gamma": 2.0,
+        "swa_start_frac": 0.7,
+        "swa_lr": 5e-4,
+    },
+
+    # frozen probe params
+    "frozen_best_probe": {
+        "pca_dim": 64,
+        "min_pos": 8,
+        "C": 0.50,
+        "alpha": 0.40,
+    },
+
+    # Residual SSM
+    "residual_ssm": {
+        "d_model": 64,
+        "d_state": 8,
+        "n_ssm_layers": 1,
+        "dropout": 0.1,
+        "correction_weight": 0.3,
+        "n_epochs": 30,
+        "lr": 1e-3,
+        "patience": 8,
+    },
+
+    # Per-taxon temperature
+    "temperature": {
+        "aves": 1.10,
+        "texture": 0.95,
+    },
+
+    # V17: Post-processing parameters
+    "file_level_top_k": 2,
+    "tta_shifts": [0, 1, -1],
+    
+    # V17 NEW: Rank-aware post-processing
+    "rank_aware_scale": True,
+    "rank_aware_power": 0.5,  # Power transform on file max
+    
+    # V17 NEW: Delta shift smoothing
+    "delta_shift_alpha": 0.15,
+    
+    # V17 NEW: Per-class thresholds (grid search range)
+    "threshold_grid": [0.3, 0.4, 0.5, 0.6, 0.7],
+
+    "probe_backend": "mlp",
+    "mlp_params": {
+        "hidden_layer_sizes": (128,),
+        "activation": "relu",
+        "max_iter": 300,
+        "early_stopping": True,
+        "validation_fraction": 0.15,
+        "n_iter_no_change": 15,
+        "random_state": 42,
+        "learning_rate_init": 0.001,
+        "alpha": 0.01,
+    },
+}
+
+CFG["full_cache_work_dir"].mkdir(parents=True, exist_ok=True)
+
+print("TensorFlow:", tf.__version__)
+print("PyTorch:", torch.__version__)
+print("Competition dir exists:", BASE.exists())
+print("Model dir exists:", MODEL_DIR.exists())
+print("V17 CFG: d_model=256, n_ssm_layers=3")
+print(json.dumps(
+    {k: (str(v) if isinstance(v, Path) else v) for k, v in CFG.items()},
+    indent=2
+))

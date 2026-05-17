@@ -1,0 +1,5 @@
+MARKDOWN CELL 17
+================================================================================
+
+## Prior Tables
+Fit site/hour/month prior tables from labeled data.

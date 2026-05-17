@@ -1,0 +1,54 @@
+000 [markdown]     56c | ## Setup
+001 [code    ]    827c | import os, glob
+002 [markdown]     49c | ## Configuration
+003 [code    ]     98c | # Cell 1 — Mode switch
+004 [markdown]    719c | # BirdCLEF+ 2026 -- ProtoSSM v5: Maximum Ensemble
+005 [code    ]   4692c | # Cell 2 — Imports and run config
+006 [code    ]   1506c | # ── V18 CFG UPGRADES ──────────────────────
+007 [code    ]    283c | 
+008 [code    ]   1026c | # ── STEP 3: Mixup + CutMix Hybrid ─
+009 [code    ]    892c | # ── STEP 4: Species-Frequency Aware Focal Loss ──
+010 [markdown]     90c | ## Data Loading & Preprocessing
+011 [code    ]   2966c | taxonomy = pd.read_csv(BASE / "taxonomy.csv")
+012 [code    ]     85c | CLASS_WEIGHTS = build_class_freq_weights(Y_FULL_TRUTH)
+013 [code    ]   1503c | # ── STEP 5: Isotonic Calibration + Threshold Optimization ──
+014 [code    ]    820c | # ── STEP 6: Ensemble Weight Sweep ──
+015 [markdown]     83c | ## Model & Mapping
+016 [code    ]   4541c | # Cell 3 — Load Perch, mapping, and selective frog proxies
+017 [markdown]     53c | ## Utilities
+018 [code    ]   1988c | # Cell 4 — Metrics and helper utilities
+019 [code    ]   5819c | # V16/V17 NEW: Focal loss, file-level scaling, TTA, rank-aware, delta shift, per-class thresholds
+020 [markdown]     94c | ## Perch Inference Engine
+021 [code    ]   8621c | # Cell 5 — Perch inference with embeddings + selective proxies
+022 [markdown]     76c | ## Cache Management
+023 [code    ]   4865c | # Cell 6 — Load or compute full-file Perch cache
+024 [markdown]     67c | ## Prior Tables
+025 [code    ]   4994c | # Cell 7 — Fold-safe metadata prior tables
+026 [markdown]     70c | ## OOF Stacking
+027 [code    ]   2649c | # Cell 8 — Honest OOF base/prior meta-features (required for final stacker fit)
+028 [markdown]     77c | ## Classwise Probes
+029 [code    ]   6616c | # Cell 9 — Classwise embedding-probe helpers
+030 [markdown]    597c | ## ProtoSSM v2 Architecture
+031 [code    ]   8307c | # ProtoSSM v4 — Enhanced with Cross-Attention Layer
+032 [markdown]    269c | ## ProtoSSM v2 Training
+033 [code    ]  14998c | # ProtoSSM v4 Training Loop — with Mixup, Focal Loss, SWA
+034 [markdown]     73c | ## Probe Tuning
+035 [code    ]   2777c | # Cell 10 — Probe tuning (train mode only)
+036 [markdown]     72c | ## Final Probe Fit
+037 [code    ]    767c | # Cell 11 — Freeze final probe params
+038 [code    ]    259c | # Cell 12 — Fit final prior tables on all labeled soundscapes
+039 [code    ]    511c | # Cell 13 — Fit embedding scaler + PCA on all trusted full windows
+040 [markdown]    138c | ## ProtoSSM Training
+041 [code    ]   7196c | # Instantiate and train ProtoSSM v4
+042 [markdown]    294c | ## Residual SSM -- Second-Pass Boosting
+043 [code    ]  10130c | # Residual SSM: second-pass boosting on first-pass errors
+044 [code    ]    329c | # Cell 15 — Diagnostics
+045 [markdown]     55c | ## Test Inference
+046 [code    ]    760c | # Cell 16 — Infer Perch on hidden test with embeddings
+047 [markdown]    210c | ## Score Fusion -- ProtoSSM v2 + MLP Ensemble
+048 [code    ]   5236c | # Score Fusion: ProtoSSM v4 + MLP Probes + Priors + TTA (OOF-optimized weight)
+049 [markdown]     53c | ## Submission
+050 [code    ]   3379c | # Cell 18 — V17: Full post-processing pipeline
+051 [code    ]   7249c | # === v142: B0+B3 + v5 quint (iter2 pseudo2 added) + sonotype mirroring ===
+052 [code    ]    729c | # --- Build submission ---
+053 [code    ]   3384c | # Cell 19 — Final Diagnostics and Logging

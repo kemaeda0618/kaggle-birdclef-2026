@@ -1,0 +1,218 @@
+Total comments collected: 108
+
+2026-03-13 [Tom] 2026/03/13  | done whole experiments pipeline with very clean readme.md, start conducting multiple experiments. |  | cost: 22k tokens, 15min. |  | Plan: run experiments=>summarize insighs with technical reports=>self improving  |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2Fc508ac95cc0aac724a67851507c13983%2Ftraining_pipeline.png?generation=1773389285570930&alt=media)
+
+2026-03-14 [?] 
+
+2026-03-14 [Tom] 2026/3/14 | Update experiments report
+
+2026-03-15 [?] 
+
+2026-03-15 [?] 
+
+2026-03-16 [Tom] 2026/03/16  |  | data split & leak anaysis |  | scoring |  | 
+
+2026-03-16 [?] 
+
+2026-03-16 [atom1231] How was the report generated? Did Claude Code produce the entire template, and you simply populated it with the data? | 
+
+2026-03-16 [takai380] Does “Perch v2 → 234-dim → FC(256) → FC(234)” mean that the original Perch head first converts the roughly 15k-dimensional logits into a 234-dimensional vector before passing it to the label-head?
+
+2026-03-16 [Tom]   @takai380 yes. Claude still conduct experiments which is effective for perch. 
+
+2026-03-16 [?]   
+
+2026-03-16 [?] 
+
+2026-03-17 [Tom] 2026/03/17 |  | SED implementation difference comparison | 
+
+2026-03-17 [?]     
+
+2026-03-17 [?] 
+
+2026-03-17 [hengck23]   i think we need an agent to estimate cost and option of each step: | 1) e.g. implement xxx   | -use claude : cost $ expected success rate, time ...   | -use codex : cost $ expected success rate, time ...   | -use gemini : cost $ expected success rate, time ...   | -use HUAMAN : cost $ expected success rate, time ...     |  | now we already have methodology plan, in actual company we also have resource/cost plan for selection.  |  | prompt " dear claude, please come out with a resource plan for xxx using at most xxx token and keep cost within SSS and time yyy"
+
+2026-03-18 [Tom] 2026/3/18 Update |  | * experiment report SED  | * summary experiment so far (100k tokens)
+
+2026-03-18 [?]   
+
+2026-03-18 [Tom]     I was thinking from "Reinforcement Learning with Human Feedback" to "Reinforcement Learning with Kaggle Feedback" :)
+
+2026-03-18 [?]     
+
+2026-03-18 [?]     
+
+2026-03-18 [?]     
+
+2026-03-18 [?]     
+
+2026-03-18 [?]     
+
+2026-03-18 [?]     
+
+2026-03-19 [Tom]   @atom1231  I set up a watcher/handler job that enables Claude to access and analyze log files, review previous Markdown reports, and continuously scrape and evaluate relevant discussions and public notebooks, automatically generating an updated HTML report whenever an experiment is completed. All the processes are automatic.  |  | 
+
+2026-03-19 [Cody_Null] top 3 with just claude code is the most Tom thing I have ever seen 😂
+
+2026-03-19 [hengck23] Search for paper on one few shot learning with foundation model embedding space. I think can do better.
+
+2026-03-19 [Tom]   It has done multiple experiments on this area, which I don't even know until I see the logs and reports
+
+2026-03-19 [hengck23]   the lb metric is macro roc, aka average roc. so you have made submissions to probe the roc of different classes like roc(bird), roc(insects) ...roc(first 10 sorted files) ... roc(location) roc(time). you can do online learning in offline sense. Ai agent is good to analyse such probing results and make best use of slots. |  | more context, more information means better agent response | 
+
+2026-03-19 [?]     
+
+2026-03-19 [?]     
+
+2026-03-19 [Boredom]   Compared to Tom, I feel like a dinosaur. I guess I need to embrace vibe coding.
+
+2026-03-19 [?]     
+
+2026-03-19 [Cody_Null]     Definitely a time and a place for it, thinking this competition is the perfect use case. Well documented similar solutions advancing over time. 
+
+2026-03-19 [hengck23]     If 10 kagglers started a post like “my journey using agent …” like tom, then we can learn from each other. I think each of us will define skill differently and cowork with ai coder differently. I  m now exploring agent for pseudo labelling ( not model hyper parameter finetuning). Hope to start a post soon
+
+2026-03-19 [Cody_Null]     As if resisting this comp hasnt been hard enough! Might have to get involved myself!
+
+2026-03-19 [Tom]     My approach to using agents comes from my intuition as a system designer. I have a sense of which components need to be incorporated into a system workflow to enable an agent to develop effectively. I also believe that Kagglers with different backgrounds would approach this in very different ways.
+
+2026-03-19 [lingyu07]   So amazing！
+
+2026-03-19 [hengck23] ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F113660%2Ff5c4408551f029ba2a091d5bc856da43%2FSelection_2692.png?generation=1773923980230448&alt=media) | i am a chatgpt codex user. this post makes me spend money to try new AI agent. that is why AI company must organizer kaggle competitions and sponsor kagglers. it really shows how AI can be put to real work! |  | i want to repeat this "claude-code made a 0.894 submission", if successful, the little lobsters will take over
+
+2026-03-19 [Tom]   tips: |  | Start: | * Do EDA on the data, read few ogg files and check | * create a ML workflow | * run your first simple experiment |  | Now claude knows what you want to do. |  | Building System: | * create knowledge: update md, excel, html report every K minutes (very important) | * do deep research and write into knowledge | * create experiment job chain => run experiment and write results to the knowledge | * setting watch/handle to report current experiment every 10 minutes | * scrapping public resource and papers , write ideas in md, then adding experiment in your job chain | * self improving based on the knowledge 
+
+2026-03-19 [Tom]   @hengck23  At least your agent need to show you this, then your work flow would be full automatic. |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2F8059ec088187699337742d58f61ea6aa%2Fcc.png?generation=1773933994360547&alt=media)
+
+2026-03-19 [Starry] So these reports are generated by Claude Code? It's so amazing. I wonder what you do in this whole pipeline, are you just give some ideas and some relative meterials to Claude Code and ask it to conduct some experiments？ And I wonder how long time do you spend in this competetion until now?  |  | I think it is a very good practice to show the powerful of Agents in Kaggling. It would be very amazing if just use the Agents to get the gold medal even prizes. Compare to you, I think I just like a monkey😂, I keep coding by myself (with limited aid of LLMs). In fact, I have deployed openclaw but I have 
+
+2026-03-19 [Tom]   Check the tips I post below @hengck23 comment 
+
+2026-03-20 [hengck23] Claude skill files i used   |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F113660%2F13c2e3049ade0974a5e8370beea77bbb%2FSelection_2695.png?generation=1773965672792897&alt=media)
+
+2026-03-20 [Tom] [2026/3/20] SED update  | Claude start to search domain generalization, collecting some knowledges in the report.
+
+2026-03-20 [hengck23] you may want to check this: |  | A Kaggle Grandmaster Tries to Semi-Automate Himself | An experiment in turning years of machine learning experience into an research loop that could run on its own. |  | https://github.com/ledmaster/ml-mania-2026 |  | 
+
+2026-03-20 [Tom]   I’m really interested in this direction, but my ultimate goal is to build a Magnus Carlsen–level agent on Kaggle, one that can consistently dominate every game it plays. I need other top kagglers experience turning into agent knowledge.
+
+2026-03-21 [Gaurav Rawat] Awesome work on the loop and plan with claude . wonder you create a skill for this and open source end of comp :D 
+
+2026-03-21 [Tom] [2026/3/21]  |  |  | Just share that Claude has been consistently generating new paper ideas every half hour and rapidly developing a series of wild, ambitious experiments. I have so many submissions can use, it's hard to decide which one. Don't know what will happen and what surprise it will show me when I wake up and open my eyes tomorrow |  |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2F0820a37623fd7a7c0b3a65e25d81806c%2Fcc.png?generation=1774093706960573&alt=media) | 
+
+2026-03-21 [hengck23]   Just feedback lb score back to Claude and ask him to choose and rank
+
+2026-03-21 [Tom]     I’ve been preparing to tighten the deadline for some time. However, I’m concerned that giving Claude too much flexibility in LB judgment may result in overfitting.
+
+2026-03-21 [hengck23]     I don’t use Claude but i will ask my chatgpt not to overfit and occasionally fake lb results to him. Since there is conversation branching, i sometimes give him all results and check his response and see if he is hallucinating or not
+
+2026-03-21 [hengck23]     You can try and ask: how can you sure you are not overfitting? Please make some proof, eg analysis or predict some probing, experimental results if generalisation holds or not. Try argue with him and pressure him to admit his results is overfitting 
+
+2026-03-21 [Starry] Finally I also start my Claude Code, instead of using Claude Sonnet/Ops which is charged, I use GPT-5.3-Codex based on my copilot pro which is free for student. So which agents or models will win in this competition? let's wait and see.  |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F7796170%2F2ddd168c0a8a3ce792a741211ac14b38%2F653e328a-001c-4ac3-a337-c89dc3baaed8.png?generation=1774100607555006&alt=media)
+
+2026-03-22 [Tom]   @shtljw nice. Really excited to see your final results!
+
+2026-03-22 [?] 
+
+2026-03-22 [?] 
+
+2026-03-23 [OpPrime]   what have you discovered, as the difference between the two? I am also using Codex mainly 
+
+2026-03-23 [?] 
+
+2026-03-23 [weke] how much performance is the agent able to squeeze from the direction that you give it to him? @tom99763 
+
+2026-03-25 [Gaurav Rawat]   one pattern finding from your outputs from claude TOm that the ui seems so familiar in lot of other vibe coded apps I have seen specially for the SED report.. feeling if a stage comes when all solutions from claude converge across folks doing it . ofcourse UI is a bad example but hat have seen follows similar patterns if a person vibe codes as defaults .
+
+2026-03-26 [Konstantin Zorin] Did you evaluate how many dollars you've spent using these tools for this competition?
+
+2026-03-28 [Mike Kim]   From the current pricing here: | https://claude.com/pricing#api |  | If you are using Opus4.6, the output price is $25 per 1 million tokens. Let us ignore input (and caching) for now because it isn't stated here. So all the work until now cost $2.5 (100K tokens)? Or is the 2.5 dollars for work done on 2026/03/18 only? I'm asking because I would love to do this, but I'm unsure of the cost. I believe another person mentioned using Claude Code (or Open Code) plus a different LLM (at 0 or lower cost). 
+
+2026-03-28 [hengck23]     It is like early days when you rent gpu for kaggle. The bottom line is spend money only for scaling up ( i.e you know you definitely have performance gain but not how much). You don’t spend money for exploration etc. |  | You should have done some local experiment for different arch, configuration etc and narrow down some high confidence search/experiment space. Then do automatic search within your budget 
+
+2026-03-28 [Mike Kim]     I have paid for CPU via AWS EC2 in the early days of Kaggle. I was not happy with the bill every single time. There was always a compute advantage even in 2012. However I think we have a difference in style and approach for using LLMs. I want to continuously burn tokens 24/7 via Open Source models and have minimal interaction with the process besides the setup (which could involve human coding, CLI work, etc.). So as close to AutoML (just press go) as possible. It seems like we aren't there yet. It seems like older open source models are too weak and do not integrate well with Open Code (e.g. 
+
+2026-03-28 [hengck23]     My setup is like this: |  | - Make a good base code.   | - In each round, the AI coder only changes a small part (e.g., backbone, loss, hyperparameters, cfg). Since only a small part is changed, it is not expensive. In fact, I don’t have to use the API—just a subscription is good enough.   | - I run the changed code on my local machine and feed the results back to the LLM, which in turn crafts proposals for new small changes and repeats    |  | My setup doesn’t cost a lot.
+
+2026-03-28 [Mike Kim]     Thanks for sharing your approach. I do something similar as stated here: https://www.kaggle.com/competitions/birdclef-2026/discussion/684207 |  | But I'm not sure Tom is doing something like that. I want to figure out what he's doing in detail. And yes he has posted many links and html files which I've read here. Even after reading it I'm still confused because I do not currently use Claude Code with Opus4.6. I will likely try Starry's approach first: | https://www.kaggle.com/competitions/birdclef-2026/discussion/681146#3425893 | Because it seems more cost effective even with high token burn rates if 
+
+2026-03-28 [Tom]     New observation: | If you keep letting it improve, it'll do extreme weighted sum fintuning without any creative new method.  |  | If you ask him to keep come up with new idea, it'll finally give you kernel density estimation approach without any further changes. | 
+
+2026-03-28 [MrSimple] Thats amazing work dude!
+
+2026-03-29 [lhwcv] Thanks to Tom for using CC, which has sparked huge interest in me. | Let’s build a fully automated Kaggle Agent. | I’ve tried making a prototype first at this link:   https://www.kaggle.com/competitions/birdclef-2026/discussion/685794
+
+2026-03-29 [Gaurav Rawat] what cv strategy has been working for you guys havent heard many discussions on cv strategies .. 
+
+2026-03-29 [Mike Kim]     I don't think it's possible to use Claude Cowork (specifically Cowork) with Codex (or anything other than Anthropic LLMs). Tom uses CC for some aspects of his workflow. https://support.claude.com/en/articles/13345190-get-started-with-cowork
+
+2026-03-29 [Tom]   Cv is hardest for Claude. Still exploring the way.
+
+2026-03-29 [Tom] For my experiments so far, I’ve observed the following: |  | ### “Keep improving the result” approach: |  | This led to excessive blending and aggressive tuning of weighted sums. While it achieved an impressive CV score of 0.999, it ultimately suffered from severe data leakage, making the results unreliable. |  | ### “Keep developing and extending the current best notebook with ~80% confidence toward a 0.938–0.94 LB” approach: |  | This strategy produced more reasonable and robust results, and importantly, the improvements translated well to the leaderboard (LB). |  | ### Inverse submission guidance | “Which submis
+
+2026-03-29 [hengck23]   You should feedback the results of cv and lb to AI. Do class by class analysis etc. he must find a correlation between cv and lb. There is no point getting perfect cv if that doesn’t bring improvement to lb. AI can suggest better proxy or submission probing etc
+
+2026-03-29 [Tom]     probing is the best way I can do currently, building CV is very hard to it.  I've struggle that for a week.
+
+2026-03-29 [hengck23]     There are many class in train. Analyses class by class to see if there is any correlation with lb. I was like to hallucinate to chatgpt about this: some kaggler can obtain xxx by correlating cv to lb. But i cannot. What do you think ….. the current top lb score is now 0.950, ….
+
+2026-04-01 [Tom] let me share successful experiments for single SED |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2F88d55651646f430d5966e91d389ddd0b%2Fexample.png?generation=1775034860019596&alt=media)
+
+2026-04-04 [Tom] Solution writeup comming soon |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2Fcafd09f2f98e8dca7afaaabf4955d646%2Fgaussian_heatmap_example.png?generation=1775298251189749&alt=media)
+
+2026-04-04 [Jiwei Liu]   Hi Tom, do you mean open source your solution before competiton ends?
+
+2026-04-04 [Tom]     @jiweiliu Actually, I’ve already open-sourced my results in this thread. Others can review the HTML files and reproduce the same result as mine. The paper just summarize all the results so far.
+
+2026-04-04 [hengck23]     It is a challenge if gemini or chatgpt can read Claude report and repeat results 
+
+2026-04-04 [Tom]     I believe they can definitely reproduce it. I’ve prepared a well-structured 11-page IEEE-format paper that includes detailed algorithms explaining how to achieve 0.93+ on a single SED using a strategy developed with Claude Code. All the hints are in the htmls of this thread.
+
+2026-04-04 [Jiwei Liu]     it's amazing. Thanks. Tom.
+
+2026-04-04 [Gaurav Rawat]   what fold strategy .. group on site ?
+
+2026-04-05 [Gaurav Rawat]   is the writeup also written agentic :) or using openai prism 
+
+2026-04-05 [Idrissa M Dicko]     I am trying building CV but it is very hard, the result keep dropping
+
+2026-04-07 [Tom] [2026/4/7] Start working on a very interesting approach which I name it "Noisy classmates", here is the concept. it's the extension of noisy student. |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2F6b5c51474c19c7c492ad687ac923c67a%2F1947d3f0-f3ed-43e7-9040-b0884b2f341b.png?generation=1775530609805842&alt=media) |  | 
+
+2026-04-07 [Cody_Null]   This idea is insane, cant wait to see this one in particular. Also love the visual aid to explain it!
+
+2026-04-07 [hengck23]   Swarm of noisy classmate agents
+
+2026-04-07 [Tom]   ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2F2f034bdba63632dc6afce07c61e87586%2Fblob_stage1_pred_ep890.png?generation=1775562732209939&alt=media)
+
+2026-04-07 [Gaurav Rawat]     love the idea to paper thing :) 
+
+2026-04-07 [Clyde]   Could we call this the ‘Eureka moment’ for LLMs?
+
+2026-04-10 [Tom] 2026 kaggle gm belike  |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2F101565f1049542720b9bd561272161b2%2Ffig1.png?generation=1775831827530868&alt=media) |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2F108c69e336bb3d029bf87bdc56a15af5%2Ffig3.png?generation=1775831835860918&alt=media) |  | ![](https://www.googleapis.com/download/storage/v1/b/kaggle-forum-message-attachments/o/inbox%2F4310004%2Fa1ed9ebfcd394bc66616bb6c9f1dd51a%2Ffig2.png?generation=1775831841763161&alt=media)
+
+2026-04-10 [Lixin73]   wow，so many people working hard！
+
+2026-04-11 [Chris Deotte] Great job @tom99763 ! Are you using Claude Capybara? How does it compare with Opus?
+
+2026-04-11 [Zhengkang Mei]   Hi Chris! Since you’re at NVIDIA, have you tried Claude Capybara (Mythos) for Kaggle? I’ve found that every major model release (like Gemini 3.0) consistently helps me boost my scores quickly. I’m curious if this new tier offers an even bigger leap in reasoning!
+
+2026-04-12 [Chris Deotte]     Hi @zhengkangmei I have not used Claude Mythos. Maybe some people at NVIDIA have access, but i do not. This is why I ask the question to @tom99763 , I'm curious how much better Mythos is then previous versions.
+
+2026-04-12 [Zhengkang Mei]     Thanks for the clarification! I didn’t realize access to Mythos was still so scarce, even within NVIDIA.
+
+2026-04-12 [Antoine Masq]     Wait, Capybara is really an Anthropic model name ? At first I thought it was just because of the fact that Capybaras happen to live in the Pantanal 😅
+
+2026-04-13 [Salman Ahmed]   Is this something similar to Deep Mutual Learning (DML)? but instead of training together you are training it separately in iterations?
+
+2026-04-13 [Tom]   I use the community open source after anthropic leaking their full resource. There are many eletronic pets inside it. I might need to try which pet can cook the bird. 
+
+2026-04-13 [Tom]     it's like classmates exchanging information during training their subjects. So deadline is their final exam 
+
+2026-04-18 [yash bhaskar] @tom99763 Great work! Any plans for further updates? Its been some time, keen to see what you share next and learn more 🙂
+
+2026-04-19 [Tom]   @yash9439 sorry I just too focus on orbit competition. That's way more fun than this.
+
+2026-04-24 [k2-gc]     I'm curious as well — is it something you can share?
+
+2026-04-26 [?] 
+

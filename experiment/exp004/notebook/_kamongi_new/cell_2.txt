@@ -1,0 +1,12 @@
+MARKDOWN CELL 2
+================================================================================
+
+# BirdCLEF+ 2026 -- Dual-Foundation ProtoSSM v3
+
+## V16 -- Dual-Foundation ProtoSSM (Perch v2 + YAMNet)
+
+### Key Addition over V15 (Residual Boosting)
+**YAMNet as second foundation model**: Concatenate Perch v2 (1536-d bird-specific) + YAMNet (1024-d general audio) embeddings = 2560-d.
+YAMNet trained on AudioSet 521 classes provides complementary audio representations.
+
+Pipeline: `Perch+YAMNet -> ProtoSSM(pass1) + MLP -> ensemble -> ResidualSSM(pass2) -> final`

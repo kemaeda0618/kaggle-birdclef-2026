@@ -1,0 +1,350 @@
+=== Cell 0 (markdown) ===
+# BirdCLEF 2026 — Distilled SED: Train + Inference
+
+**Architecture:** EfficientNet-B0 backbone + SED attention head + frozen Perch v2 embedding distillation  
+**Key idea:** The backbone learns to reproduce Perch’s 1536-d embeddings via MSE (the distillation branch). The SED classification head trains on stop-gradiented backbone features, so it never fights the distillation gradient. At inference, only the SED head is used — the distillation head is thrown away.  
+**Loss:** BCE (0.5 × clip + 0.5 × frame-max) + α · MSE(student_emb, perch_emb)  
+**Training data:** train_audio (focal recordings) + labeled train_soundscapes  
+**Reference:** Built from Hengck discussion [here](https://www.kaggle.com/competitions/birdclef-2026/discussion/685318#3430354) 0.898 with distillation vs 0.876 without (HGNet-B0)
+
+---
+
+### How this notebook works
+
+1. **Train** an EfficientNet-B0 SED model with Perch distillation (5-fold, ~25 epochs per fold)
+2. **Export** each fold’s best checkpoint to ONNX
+3. **Infer** on test soundscapes using the ONNX models (no PyTorch needed at scoring time)
+
+### Required Kaggle datasets
+
+| Dataset | Contents | Notes |
+|---|---|---|
+| `birdclef-2026` | Competition data (train_audio, train_soundscapes, CSVs) | Auto-attached |
+| `bc2026-waveform-cache` | Pre-extracted waveform cache (`.pt` int16 tensors) | Attach as input |
+| `perch-v2-no-dft-onnx` | `perch_v2_no_dft.onnx` + onnxruntime wheel | Attach as input |
+
+The waveform cache contains pre-sliced focal recordings and soundscape windows as int16 PyTorch tensors, along with metadata CSVs. This avoids decoding thousands of ogg files during training.
+
+### Versions
+
+V2: Cleaned up some comments and small bugs. Added Gaussian smooth as simple post processing step. 
+
+=== Cell 1 (markdown) ===
+## S0 — Environment Setup
+
+Install the required packages. The onnxruntime wheel is bundled in a Kaggle dataset to avoid network dependency at scoring time. `timm` provides the EfficientNet backbone with ImageNet pretrained weights.
+
+
+=== Cell 2 (code) ===
+# Install from bundled wheel (no network needed at scoring time)
+!pip install -q /kaggle/input/datasets/tuckerarrants/perch-v2-no-dft-onnx/onnxruntime-1.24.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+
+=== Cell 3 (markdown) ===
+## S1 — Imports and Configuration
+
+All hyperparameters are set here.
+
+
+=== Cell 5 (code) ===
+if MODE == "train":
+    !pip install -q timm torchaudio onnxscript onnx
+
+=== Cell 6 (markdown) ===
+## S2 — Load Data
+
+We load three things:
+1. **Focal audio metadata** — the waveform cache CSV maps each XC/iNat recording to a `.pt` tensor file
+2. **Soundscape metadata** — pre-sliced 5-second windows from the 60-second train_soundscapes
+3. **Ground-truth labels** — expert annotations for labeled soundscape windows
+
+
+=== Cell 8 (code) ===
+if DEBUG:
+    EPOCHS = 1
+    FOLDS = [0]
+    audio_cache_meta = audio_cache_meta.groupby("primary_label").head(3).reset_index(drop=True)
+    sc_cache_meta = sc_cache_meta.head(50)
+    Y_SC = Y_SC[:50]
+    non_s22_mask_sc = non_s22_mask_sc[:50]
+    print(f"DEBUG MODE: {len(audio_cache_meta)} focal, {len(sc_cache_meta)} sc, "
+          f"{EPOCHS} epoch, folds={FOLDS}")
+
+=== Cell 9 (markdown) ===
+## S3 — Model Architecture
+
+### SED (Sound Event Detection) head design
+
+Instead of Global Average Pooling (GAP), which dilutes a brief vocalization across the full 5-second window, the SED head makes **per-frame predictions** and aggregates them via learned attention weights. A species that calls for 0.3 seconds gets a sharp attention spike at those frames, rather than being averaged with 4.7 seconds of background.
+
+### Distillation head
+
+A separate branch applies GAP to the raw backbone features and projects them to Perch’s 1536-d embedding space. This branch receives all backbone gradients via MSE loss against frozen Perch embeddings. The SED classification head operates on `h.detach()` — it only shapes the attention and frame-level classifier, never pulling the backbone away from Perch’s representation.
+
+### Why stop-gradient?
+
+Without the stop-gradient, the classification loss and distillation loss would fight over the backbone’s feature representation. With it, the backbone is purely a “Perch student” — learning to reproduce Perch’s rich 14,795-species embedding geometry. The SED head then learns to classify using those frozen-quality features.
+
+Two model variants are implemented:
+- **V1**: Simple frequency-mean pooling + attention block
+- **V2** (default): Generalized Mean (GeM) frequency pooling + 512-d bottleneck + attention block — inspired by the BirdCLEF 2025 first-place solution
+
+
+=== Cell 11 (markdown) ===
+## S4 — Data Pipeline
+
+### Waveform loading
+
+The waveform cache stores audio as int16 PyTorch tensors (half the size of float32). Each focal recording and soundscape window is pre-sliced and saved as a separate `.pt` file, indexed by the metadata CSVs.
+
+### Augmentation pipeline
+
+Three simple waveform augmentations applied with probability 0.5 each:
+1. **Gain jitter** (±6 dB) — simulates varying recording distances
+2. **Additive noise** (10–30 dB SNR) — simulates environmental noise
+3. **Time shift** (±0.5s) — simulates temporal misalignment
+
+### MixUp strategy
+
+Two MixUp variants run independently:
+- **Focal-Focal MixUp**: Blends two focal recordings with Beta(0.4, 0.4) weighting. Labels are unioned (hard MixUp).
+- **Focal-Soundscape MixUp**: Blends a focal recording with a labeled soundscape window, bridging the domain gap between clean focal audio and noisy real-world soundscapes.
+
+
+=== Cell 13 (markdown) ===
+## S5 — Training Loop
+
+### Training recipe
+
+Each epoch:
+1. Sample batches with 90% focal / 10% soundscape composition
+2. Compute mel spectrogram on GPU + apply SpecAugment
+3. Forward pass: backbone produces features for both the distillation head and SED head (on detached features)
+4. Loss = BCE_classification + α × MSE_distillation
+5. Validate on held-out soundscape windows using clip+frame blend
+
+### Perch distillation mechanics
+
+For each batch, the frozen Perch ONNX model processes the same 5-second waveforms to produce target embeddings. The student’s distillation head projects GAP’d backbone features to 1536-d and is trained to match Perch via MSE. Since Perch trained on 14,795 species with millions of hours, this distillation teaches the small EfficientNet-B0 backbone to produce rich, generalizable audio representations.
+
+### Learning rate schedule
+
+Linear warmup over 2 epochs, then cosine decay to 1e-6. Gradient clipping at norm 1.0.
+
+
+=== Cell 15 (markdown) ===
+## S6 — Fold Loop + ONNX Export
+
+Train all folds, save the best checkpoint per fold, then export each to ONNX for fast inference.
+
+The ONNX export captures just the classification path (no distillation head). The exported model takes mel spectrograms as input and outputs clip-level and frame-level logits. This means inference only needs `onnxruntime` + `librosa` — no PyTorch required.
+
+
+=== Cell 17 (markdown) ===
+## S7 — OOF Evaluation
+
+Quick summary of out-of-fold performance.
+
+
+=== Cell 18 (code) ===
+# =================================================================
+# S7 -- EVALUATION SUMMARY
+# =================================================================
+
+if MODE != "train":
+    print("Skipping evaluation (MODE='infer')")
+else:
+
+    has = ~np.isnan(oof_ns22[:, 0])
+    if has.sum() > 0:
+        r_all = full_eval(Y_SC[has], oof_ns22[has], non_s22_mask_sc[has], TAXON_MASKS)
+        print("=" * 60)
+        print("OOF RESULTS (best-ns22 checkpoints)")
+        print("=" * 60)
+        print(f"  macro AUC (all):        {r_all['macro_auc_all']:.4f}")
+        print(f"  macro AUC (non-S22):    {r_all['non_s22_macro']:.4f}")
+        for t in ["Aves", "Amphibia", "Insecta", "Mammalia"]:
+            print(f"    {t:<12}: {r_all.get(f'non_s22_{t}', float('nan')):.4f}")
+    
+    # Per-epoch progression
+    print("\nPer-epoch pooled non-S22 AUC:")
+    fold_true, fold_ns22_m = {}, {}
+    for fk in range(N_FOLDS):
+        vm = sc_cache_meta["fold"].values == fk
+        fold_true[fk] = Y_SC[vm]
+        fold_ns22_m[fk] = non_s22_mask_sc[vm]
+    
+    n_eps = [len(all_hist[k]["val_preds"]) for k in range(N_FOLDS) if k in all_hist]
+    max_ep = min(n_eps) if n_eps else 0
+    for ep in range(max_ep):
+        pp = np.concatenate([all_hist[k]["val_preds"][ep] for k in range(N_FOLDS) if k in all_hist])
+        pt = np.concatenate([fold_true[k] for k in range(N_FOLDS) if k in all_hist])
+        pm = np.concatenate([fold_ns22_m[k] for k in range(N_FOLDS) if k in all_hist])
+        ns, _ = compute_macro_auc(pt, pp, mask=pm)
+        print(f"  Ep{ep:02d}: {ns:.4f}")
+
+
+=== Cell 19 (markdown) ===
+---
+
+## Inference
+
+Everything below runs at scoring time. It uses only the ONNX models exported above — no PyTorch, no torchaudio, no timm. Just `onnxruntime` + `librosa` + `numpy`.
+
+The mel spectrogram is computed with librosa to match the training pipeline: 128 mels, n_fft=2048, hop=512, fmin=20, fmax=16000, power-to-dB with top_db=80, per-instance normalization.
+
+
+=== Cell 20 (code) ===
+# =================================================================
+# INFERENCE -- Mel spectrogram (librosa)
+# =================================================================
+if MODE != "infer":
+    print("Skipping inference setup (MODE='train')")
+else:
+    import librosa
+
+    INF_N_MELS   = 256
+    INF_N_FFT    = 2048
+    INF_HOP      = 512
+    INF_FMIN     = 20
+    INF_FMAX     = 16000
+    INF_TOP_DB   = 80
+    INF_SR       = 32000
+    INF_CHUNK_S  = 5
+    INF_CHUNK_N  = INF_SR * INF_CHUNK_S   # 160,000
+    INF_N_FRAMES = INF_CHUNK_N // INF_HOP + 1  # 313
+    
+    def audio_to_mel(chunks):
+        """Raw audio chunks (N, 160000) -> normalized mel dB (N, 1, 128, 313)."""
+        mels = []
+        for i in range(chunks.shape[0]):
+            S = librosa.feature.melspectrogram(
+                y=chunks[i], sr=INF_SR, n_fft=INF_N_FFT, hop_length=INF_HOP,
+                n_mels=INF_N_MELS, fmin=INF_FMIN, fmax=INF_FMAX, power=2.0,
+            )
+            S_dB = librosa.power_to_db(S, top_db=INF_TOP_DB)
+            S_dB = (S_dB - S_dB.mean()) / (S_dB.std() + 1e-6)
+            mels.append(S_dB)
+        return np.stack(mels)[:, np.newaxis, :, :].astype(np.float32)
+    
+    print(f"Inference mel: {INF_N_MELS} mels, {INF_N_FRAMES} frames/chunk")
+
+
+=== Cell 21 (markdown) ===
+## Load ONNX fold models
+
+Each ONNX model takes `(B, 1, 128, 313)` mel input and outputs `clip_logits (B, 234)` and `framewise_logits (B, T, 234)`.
+
+
+=== Cell 22 (code) ===
+# =================================================================
+# INFERENCE -- Load ONNX sessions
+# =================================================================
+if MODE != "infer":
+    print("Skipping ONNX loading (MODE='train')")
+else:
+    import re, glob
+
+    def discover_folds(sed_dir):
+        pat = re.compile(r'sed_fold(\d+)\.onnx$')
+        folds = []
+        for fname in os.listdir(sed_dir):
+            m = pat.match(fname)
+            if m: folds.append(int(m.group(1)))
+        return sorted(folds)
+    
+    def make_session(onnx_path):
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = 4
+        so.inter_op_num_threads = 1
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        return ort.InferenceSession(onnx_path, sess_options=so, providers=providers)
+    
+    SED_DIR_CANDIDATES = [
+        str(OUT_DIR),
+        '/kaggle/input/datasets/tuckerarrants/bc2026-distilled-sed-public',
+    ]
+    SED_DIR = next((p for p in SED_DIR_CANDIDATES if os.path.isdir(p) and
+                    any(f.endswith('.onnx') and 'sed' in f for f in os.listdir(p))), None)
+    assert SED_DIR, f'No SED ONNX files found in {SED_DIR_CANDIDATES}'
+    
+    INF_FOLDS = discover_folds(SED_DIR)
+    assert INF_FOLDS, f'No sed_distill_fold*.onnx in {SED_DIR}'
+    print(f'Found {len(INF_FOLDS)} fold(s) in {SED_DIR}: {INF_FOLDS}')
+    
+    fold_sessions = []
+    for fold in INF_FOLDS:
+        p = f'{SED_DIR}/sed_fold{fold}.onnx'
+        sess = make_session(p)
+        fold_sessions.append(sess)
+        size_mb = os.path.getsize(p) / 1e6
+        print(f'  fold {fold}: {size_mb:5.1f}MB  providers={sess.get_providers()}')
+
+
+=== Cell 23 (markdown) ===
+## Inference loop
+
+For each 1-minute test soundscape:
+1. Decode to 12 non-overlapping 5-second chunks
+2. Compute mel spectrogram with librosa
+3. Run each fold’s ONNX model
+4. Blend: `0.5 × sigmoid(clip_logits) + 0.5 × sigmoid(frame_max_logits)`
+5. Average across folds
+
+
+=== Cell 25 (markdown) ===
+## Write submission.csv
+
+Standard BirdCLEF submission format: `row_id` + 234 species probability columns.
+
+
+=== Cell 26 (code) ===
+# =================================================================
+# WRITE SUBMISSION
+# =================================================================
+if MODE != "infer":
+    print("Skipping submission (MODE='train')")
+else:
+    submission = pd.DataFrame(all_preds_arr, columns=PRIMARY_LABELS)
+    submission.insert(0, 'row_id', all_rows)
+    
+    assert submission.shape[1] == NUM_CLASSES + 1
+    assert submission['row_id'].is_unique
+    assert not submission.iloc[:, 1:].isna().any().any()
+    submission.iloc[:, 1:] = submission.iloc[:, 1:].clip(0.0, 1.0)
+    
+    submission.to_csv('submission.csv', index=False)
+    print(f'Wrote submission.csv: {len(submission)} rows x {submission.shape[1]} cols')
+    print(submission.head(3).iloc[:, :6])
+
+
+=== Cell 27 (markdown) ===
+## Notes
+
+### Architecture summary
+```
+waveform (B, 160000) at 32kHz
+  -> MelSpectrogram (B, 1, 256, 313)
+  -> EfficientNet-B0 backbone (B, 1280, F', T')
+  |-- [distillation branch] GAP -> Linear(1280, 1536) -> MSE vs Perch
+  +-- [classification branch, on h.detach()]
+       -> GeMFreq pool -> (B, 1280, T')
+       -> bottleneck 1280->512 with dropout
+       -> attention block -> clip_logits (B, 234) + frame_logits (B, T', 234)
+```
+
+### Key design decisions
+
+- **Stop-gradient separation**: The backbone learns Perch's representation via MSE. The SED head learns to classify using those features but can't corrupt them. This prevents the common failure mode where classification and distillation losses fight each other.
+
+- **SED attention pooling**: Instead of GAP (which dilutes brief vocalizations), learned attention weights focus on frames where species are calling. A 0.3-second call in a 5-second window gets appropriately upweighted.
+
+- **Dual output blending**: `0.5 x clip + 0.5 x frame_max` at inference. The clip prediction captures the overall scene; frame_max captures the strongest per-species activation. Their blend is more robust than either alone.
+
+- **Focal-Soundscape MixUp**: Mixing focal recordings (clean, single-species) with soundscape windows (noisy, multi-species) helps bridge the domain gap between training data types.
+
+### Reproducing results
+1. Create a Kaggle dataset from the waveform cache (the `audio/` subdirectory + metadata CSVs)
+2. Attach `perch-v2-no-dft-onnx` dataset for the Perch ONNX model
+3. Run with GPU accelerator (P100 or T4)
+

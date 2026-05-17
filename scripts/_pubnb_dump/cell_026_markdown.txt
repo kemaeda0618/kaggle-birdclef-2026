@@ -1,0 +1,2 @@
+## OOF Stacking
+Build honest out-of-fold base and prior meta-features.

@@ -1,0 +1,81 @@
+Title: [placeholder] Claude-Code Results for BirdClef2026
+Author: Tom
+Total messages: 108
+
+======================================================================
+FIRST MESSAGE (by Tom):
+======================================================================
+This html provides the summarization, solution guiding & EDAs made by claude-code, share in the forum. 
+
+I'll update all the result discover by claude-code in this thread throughout the whole competition.
+
+Update automatic submission workflow
+
+Progression:
+
+[2026/3/14] Finish full automatic workflow setup
+
+[2026/3/15] Best single model score: 0.849lb
+
+[2026/3/16] Solve CV-LB inconsistent issue, inverse engineering on public SED approach. Update possible improvements for SED. 
+Start build approach from the essence of last year solutions
+
+[2026/3/17] New progression: claude-code submit a 0.893 scored notebook. Adding distillation to experiment CronJob (from @hengck23 )
+
+```plantext
+Prompt: 
+throw in a bunch of wave files (e.g. unlabeled soundscape files from this and previous competitions). extract their emebeddings and make a database. distill to your favourite pytorch models and enjoy!
+```
+
+
+[2026/3/18] claude-code made a 0.894 submission 
+
+[2026/3/19] some interesting local discoveries. Claude-codes made a 0.918lb sub, directly jump to top3
+
+[2026/3/20] develop a new approach, boost to 0.921lb
+
+[2026/3/21] success consistently automatic collect online ideas and execute every idea
+
+[2026/3/22] reaching 0.926 from the ideas it collects. Update massive post proc reports. Finish 53 rounds and 1099 tested methods!
+
+Agent starts to build unique pipeline which gets very good results.
+
+[2026/3/25] Claude find a secret ingredient for the dataset, just hit 0.929lb. CronJob status has changed to hourly web scrapping from remote agent with local validation loop.
+
+[2026/3/30] **start to develop CLAP + PERCH approach (plan is in report attachment )**
+
+[2026/4/4] Pipeline keeps improving CV-LB. After 1 week feedback, Claude-code submits a 0.938 result.
+
+
+39 comments
+
+======================================================================
+CLAP-MENTIONING COMMENTS
+======================================================================
+
+    --- Tom (2026-04-04T13:39:33.880Z) ---
+    I believe they can definitely reproduce it. I’ve prepared a well-structured 11-page IEEE-format paper that includes detailed algorithms explaining how to achieve 0.93+ on a single SED using a strategy developed with Claude Code. All the hints are in the htmls of this thread.
+
+--- Tom (2026-03-29T12:02:46.610Z) ---
+For my experiments so far, I’ve observed the following:
+
+### “Keep improving the result” approach:
+
+This led to excessive blending and aggressive tuning of weighted sums. While it achieved an impressive CV score of 0.999, it ultimately suffered from severe data leakage, making the results unreliable.
+
+### “Keep developing and extending the current best notebook with ~80% confidence toward a 0.938–0.94 LB” approach:
+
+This strategy produced more reasonable and robust results, and importantly, the improvements translated well to the leaderboard (LB).
+
+### Inverse submission guidance
+“Which submission would most significantly change your strategy, confidence, or LB estimation?”
+
+This approach is highly robust. Claude Code proposes a submission, and you intentionally use only a single submission to test that hypothesis. If the leaderboard (LB) result comes back negative, it provides a strong corrective signal—a high-value “reward” in terms of learning—because it prevents the agent from continuing to optimize in the wrong direction.
+
+In other words, this method prioritizes information gain over incremental improvement, helping to realign strategy efficiently and avoid wasted iterations.
+
+### Key takeaway:
+The concept of an “imagination CV” does exist within LLMs. Even though constructing a reliable cross-validation scheme is particularly challenging in this competition, consistently reinforcing (rewarding) tools like Claude Code can lead the model to develop a perception-based proxy for CV.
+While this is not a true statistical validation, it can still provide a useful directional signal for model improvement when conventional CV is difficult to implement.
+
+To be continued…

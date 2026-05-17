@@ -1,0 +1,34 @@
+CODE CELL 39
+================================================================================
+
+# Cell 16 — Infer Perch on hidden test with embeddings
+test_paths = sorted((BASE / "test_soundscapes").glob("*.ogg"))
+
+if len(test_paths) == 0:
+    print(f"Hidden test not mounted. Dry-run on first {CFG['dryrun_n_files']} train soundscapes.")
+    test_paths = sorted((BASE / "train_soundscapes").glob("*.ogg"))[:CFG["dryrun_n_files"]]
+else:
+    print(f"Hidden test files: {len(test_paths)}")
+
+# [MODIFIED - Opsi 3] Gunakan proxy_reduce terbaik dari grid search (bukan hardcode "max")
+meta_test, scores_test_raw, emb_test = infer_perch_with_embeddings(
+    test_paths,
+    batch_files=CFG["batch_files"],
+    verbose=CFG["verbose"],
+    proxy_reduce=CFG["proxy_reduce"],  # hasil grid search, default "max"
+)
+print(f"proxy_reduce used for test inference: {CFG['proxy_reduce']!r}")
+
+print("meta_test:", meta_test.shape)
+print("scores_test_raw:", scores_test_raw.shape)
+print("emb_test:", emb_test.shape)
+
+
+# YAMNet embeddings for test data
+print("Computing YAMNet embeddings for test data...")
+yamnet_emb_test = extract_yamnet_embeddings(test_paths, verbose=CFG["verbose"])
+print(f"yamnet_emb_test: {yamnet_emb_test.shape}")
+
+# Concatenate with Perch test embeddings
+emb_test = np.concatenate([emb_test, yamnet_emb_test], axis=1).astype(np.float32)
+print(f"Combined test embeddings: {emb_test.shape}")

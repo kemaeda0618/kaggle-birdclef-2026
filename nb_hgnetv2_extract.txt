@@ -1,0 +1,330 @@
+=== Cell 0 (markdown) ===
+# BirdCLEF+2026: HGNetV2-B0 Baseline [Training]
+
+【UPDATE1】 added AttnetionSEDHead and CustomLoss for it  
+【UPDATE2】 renewed CustomLoss, which adopts logit-LSE   
+【UPDATE3】 replaced the classifier head with LSEHead and used BCEWithLogitsLoss  
+【UPDATE4】 updated some points  
+【UPDATE5】 added Model EMA  
+【UPDATE6】 made LSE trainable and tuned several hyper parameters
+
+## About
+
+This notebook shows you an example of training process.
+
+I used some techniques for fast audio loading:  
+- converted `.ogg` files into `.wav` in advance
+    - https://www.kaggle.com/datasets/ttahara/birdclef2026-train-audio-wav-00
+    - https://www.kaggle.com/datasets/ttahara/birdclef2026-train-audio-wav-01
+    - https://www.kaggle.com/datasets/ttahara/birdclef2026-train-audio-wav-02
+    - https://www.kaggle.com/datasets/ttahara/birdclef2026-train-audio-wav-03
+- load **not** entire the `.wav`file but only **the necessary parts(5 sec)** of it using `soundfile` library
+
+I trained `HGNetV2-B0` by 4-fold cross validation.  
+Each fold took about 30 minutes, therefore the entire training process completed in about 2 hours.
+
+### settings
+#### data
+* input : `train_audio` and `train_soundscapes`
+* target: `primary_label` and `secondary_labels`
+* CV split:
+    * Multi-Label Stratifiled Group K-Fold(K=4)
+    * using file ids as group ids
+* LogMelSpectrogram:
+    ```python
+    mel_spectrogram_params = dict(
+        sample_rate= 32_000,
+        n_fft      = 2048,
+        win_length = 626,
+        hop_length = 313,
+        f_min      = 20,
+        n_mels     = 256,
+        power      = 2.0,
+        center     = True,
+        pad_mode   = "reflect",
+        norm       = "slaney",
+        mel_scale  = 'htk',
+    )
+    top_db = 80
+    lms_shape = (256, 256)
+    ```
+#### model
+* backbone: `hgnetv2_b0.ssld_stage2_ft_in1k` from `timm`
+* head    : LSEHead(`head_dropout`=0.3, `initial_temperature`=1.0, `is_lse_trainable`=True)
+
+#### training
+* max_epoch : 20
+* batch_size: 64
+* optimizer: AdamW(`lr`=5e-4, `weight_de
+
+=== Cell 1 (markdown) ===
+## Preparation
+
+=== Cell 2 (markdown) ===
+### libraries
+
+=== Cell 3 (code) ===
+!pip install -q openvino onnxsim onnxscript onnxruntime
+
+=== Cell 4 (code) ===
+RANDOM_SEED = 1086
+
+import os
+os.environ['PYTHONHASHSEED'] = str(RANDOM_SEED)
+
+=== Cell 5 (code) ===
+import ast
+import gc
+import copy
+import math
+import random
+import warnings
+import typing as tp
+from pathlib import Path
+
+from time import time
+from functools import wraps
+import numpy as np
+import pandas as pd
+from scipy.sparse import coo_matrix
+
+from tqdm.notebook import tqdm, trange
+from sklearn.metrics import roc_auc_score, log_loss
+
+import wave
+import soundfile
+
+import timm
+import torch
+import torchaudio
+from torchvision.transforms import v2 as tvt_v2
+
+from torch import nn
+from torch.nn import functional as F
+from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim import AdamW
+
+import joblib
+import onnx, onnxsim
+import openvino as ov
+
+=== Cell 6 (code) ===
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+=== Cell 7 (code) ===
+ROOT = Path.cwd().parent
+
+INPUT = ROOT / "input"
+DATA = INPUT / "competitions" / "birdclef-2026"
+TRAIN_AUDIO = DATA / "train_audio"
+TRAIN_SS = DATA / "train_soundscapes"
+TEST_SS = DATA / "test_soundscapes"
+
+TRAIN_AUDIO_WAVS = [
+    INPUT / "datasets" / f"ttahara/birdclef2026-train-audio-wav-{i:02}"
+    for i in range(4)]
+PROC = ROOT / "processed_data"
+TRAIN_SS_SPLIT = PROC / "train_soundscapes_split"
+TRAIN_SS_SPLIT.mkdir(exist_ok=True, parents=True)
+
+N_FOLDS = 4
+N_SPECIES = 234
+N_CLASSES = 5
+
+=== Cell 8 (code) ===
+def set_random_seed(seed: int = 42, deterministic: bool = True):
+    """Set seeds"""
+    os.environ["PYTHONHASHSEED"] = str(seed)  # python
+    random.seed(seed)  # python
+    np.random.seed(seed)  # cpu
+    torch.manual_seed(seed)  # cpu
+    if torch.cuda.is_available():  # gpu
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = deterministic
+
+set_random_seed(RANDOM_SEED)
+
+=== Cell 9 (markdown) ===
+### load label file
+
+=== Cell 10 (code) ===
+train_labels = pd.read_csv(DATA / "train.csv")
+
+train_ss_labels = pd.read_csv(DATA / "train_soundscapes_labels.csv")
+train_ss_labels = train_ss_labels.drop_duplicates().reset_index(drop=True)
+
+train_ss_labels["start"] = pd.to_datetime(train_ss_labels["start"], format="%H:%M:%S")
+train_ss_labels["end"] = pd.to_datetime(train_ss_labels["end"], format="%H:%M:%S")
+train_ss_labels["start_sec"] = train_ss_labels["start"].dt.minute * 60 + train_ss_labels["start"].dt.second
+train_ss_labels["end_sec"] = train_ss_labels["end"].dt.minute * 60 + train_ss_labels["end"].dt.second
+
+=== Cell 11 (code) ===
+taxonomy = pd.read_csv(DATA / "taxonomy.csv")
+
+SPECIES = taxonomy.primary_label.values.tolist()
+
+label2idx = {label: idx for idx, label in enumerate(taxonomy.primary_label.values)}
+idx2label = {idx: label for label, idx in label2idx.items()}
+
+label2cls = {label: cls for label, cls in taxonomy[["primary_label", "class_name"]].values}
+
+CLASSES = sorted(taxonomy["class_name"].unique())
+cls2idx = {cls: idx for idx, cls in enumerate(CLASSES)}
+
+=== Cell 12 (code) ===
+idxs_list_for_classes = [
+    taxonomy.query("class_name == @c").index.values
+    for c in CLASSES
+]
+for i in range(N_CLASSES):
+    print(f"{CLASSES[i]}: {idxs_list_for_classes[i].shape[0]}")
+
+=== Cell 13 (markdown) ===
+### split labeled audio files in train_soundscapes
+
+=== Cell 14 (code) ===
+train_ss_ai_list = []
+train_ss_fn_list = []
+train_ss_pl_list = []
+sampling_rate = 32_000
+
+tmp_in_fn, tmp_pl, tmp_start, tmp_end = train_ss_labels.loc[
+    0, ["filename", "primary_label", "start_sec", "end_sec"]].values
+tmp_wave, _ = soundfile.read(TRAIN_SS / tmp_in_fn, dtype="float32")
+
+for in_fn, pl, start, end in tqdm(
+    train_ss_labels.loc[1:, ["filename", "primary_label", "start_sec", "end_sec"]].values
+):
+    if in_fn == tmp_in_fn and pl == tmp_pl:
+        tmp_end = end
+        continue
+    
+    wave_seg = tmp_wave[tmp_start * sampling_rate: tmp_end * sampling_rate]
+    ai = tmp_in_fn.split(".")[0] 
+    out_fn = f"{ai}_{tmp_start}-{tmp_end}.wav"
+    soundfile.write(
+        str(TRAIN_SS_SPLIT / out_fn), wave_seg, samplerate=sampling_rate,
+        format="wav", subtype="FLOAT")
+    
+    train_ss_ai_list.append(ai)
+    train_ss_fn_list.append(out_fn)
+    train_ss_pl_list.append(tmp_pl)
+
+    tmp_pl = pl
+    tmp_start = start
+    tmp_end = end
+
+    if in_fn != tmp_in_fn:
+        tmp_in_fn = in_fn
+        tmp_wave, _ = soundfile.read(TRAIN_SS / tmp_in_fn, dtype="float32")
+
+else:
+    wave_seg = tmp_wave[tmp_start * sampling_rate: tmp_end * sampling_rate]
+    ai = tmp_in_fn.split(".")[0]
+    out_fn = f"{ai}_{start}-{end}.wav"
+    soundfile.write(
+        str(TRAIN_SS_SPLIT / out_fn), wave_seg, samplerate=sampling_rate,
+        format="wav", subtype="FLOAT")
+    
+    train_ss_ai_list.append(ai)
+    train_ss_fn_list.append(out_fn)
+    train_ss_pl_list.append(tmp_pl)
+
+=== Cell 15 (markdown) ===
+### prepare train label dataframe
+
+=== Cell 16 (code) ===
+train_ss_labels_merged = pd.DataFrame({
+    "audio_id": train_ss_ai_list,
+    "filename": train_ss_fn_list,
+    "primary_label": train_ss_pl_list,
+    "labels": train_ss_pl_list,
+})
+train_ss_labels_merged["file_path"] = [
+    str(TRAIN_SS_SPLIT / fn) for fn in train_ss_labels_merged["filename"].values]
+
+=== Cell 17 (code) ===
+print(train_ss_labels_merged.shape)
+
+=== Cell 18 (code) ===
+display(train_ss_labels.head(12))
+
+=== Cell 19 (code) ===
+display(train_ss_labels_merged.head(5))
+
+=== Cell 20 (code) ===
+pl2wp = {}
+for i in range(4):
+    wav_path = TRAIN_AUDIO_WAVS[i]
+    for pl_dir in sorted(wav_path.iterdir()):
+        pl2wp[pl_dir.name] = wav_path
+
+=== Cell 21 (code) ===
+train_labels_merged = pd.DataFrame()
+train_labels_merged["audio_id"] = train_labels["filename"].str.split(".").explode().values[0::2]
+train_labels_merged["filename"] = train_labels["filename"]
+
+train_labels_merged["primary_label"] = train_labels["primary_label"]
+train_labels_merged["labels"] = [
+    ";".join([pl] + ast.literal_eval(sls))
+    for pl, sls in train_labels[["primary_label", "secondary_labels"]].values
+]
+
+train_labels_merged["file_path"] = [
+    str(pl2wp[pl] / f"{fn.split(".")[0]}.wav")
+    for fn, pl in train_labels_merged[["filename", "primary_label"]].values
+]
+
+=== Cell 22 (code) ===
+train_df = pd.concat([
+    train_labels_merged,
+    train_ss_labels_merged,
+], axis=0, ignore_index=True)
+
+=== Cell 23 (code) ===
+labels_arr = np.zeros((len(train_df), len(label2idx)), dtype=np.float32)
+cls_arr = np.zeros((len(train_df), len(cls2idx)), dtype=np.float32)
+
+for idx, labels in enumerate(train_df["labels"].values):
+    for l in labels.split(";"):
+        labels_arr[idx, label2idx[l]] = 1
+        cls_arr[idx, cls2idx[label2cls[l]]] = 1
+
+=== Cell 24 (code) ===
+print(train_df.shape)
+label_df = pd.DataFrame(
+    np.concat([labels_arr, cls_arr], axis=1),
+    columns=list(label2idx.keys()) + list(cls2idx.keys())
+)
+train_df = pd.concat([train_df, label_df], axis=1)
+print(train_df.shape)
+
+=== Cell 25 (markdown) ===
+### split folds
+
+=== Cell 27 (code) ===
+mlsgkf = MultiLabelStratifiedGroupKFold(n_splits=N_FOLDS, random_state=RANDOM_SEED)
+train_val_splits = list(mlsgkf.split(
+    labels_arr, train_df["audio_id"].values
+))
+
+=== Cell 28 (code) ===
+train_df.insert(5, "fold",  -1)
+for fold_id, (trn_idx, val_idx) in enumerate(train_val_splits):
+    train_df.loc[val_idx, "fold"] = fold_id
+
+=== Cell 29 (code) ===
+for fold_id in range(N_FOLDS):
+    print(f"[fold {fold_id}]")
+    print(
+        "train_audio      :",
+        ((train_df["fold"] != fold_id) & train_df['filename'].str.contains("ogg")).sum(),
+        ((train_df["fold"] == fold_id) & train_df['filename'].str.contains("ogg")).sum(),
+    )
+    print(
+        "train_soundscapes:",
+        ((train_df["fold"] != fold_id) & train_df['filename'].str.contains("wav")).sum(),
+        ((train_df["fold"] == fold_id) & train_df['filename'].str.contains("wav")).sum(),
+    )

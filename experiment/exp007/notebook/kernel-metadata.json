@@ -1,0 +1,14 @@
+{
+  "id": "maekeso/birdclef2026-exp007-train",
+  "title": "birdclef2026-exp007-train",
+  "code_file": "train_and_pseudo.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "competition_sources": ["birdclef-2026"],
+  "dataset_sources": [],
+  "kernel_sources": [],
+  "category_ids": ["audio"]
+}
