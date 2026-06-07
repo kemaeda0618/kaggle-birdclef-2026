@@ -1,0 +1,99 @@
+# =================================================================
+# INFERENCE -- Audio loading + main loop
+# =================================================================
+from scipy.ndimage import convolve1d
+
+GAUSSIAN_KERNEL = np.array([0.1, 0.2, 0.4, 0.2, 0.1])
+N_WINDOWS = 12  # 60s / 5s
+
+if MODE != "infer":
+    print("Skipping inference (MODE='train')")
+else:
+    try:
+        import soundfile as sf
+        DECODER = 'soundfile'
+    except ImportError:
+        DECODER = 'librosa'
+    print(f'Audio decoder: {DECODER}')
+
+    def load_audio_32k_mono(path):
+        if DECODER == 'soundfile':
+            wav, sr = sf.read(path, dtype='float32', always_2d=False)
+            if wav.ndim > 1: wav = wav.mean(axis=1)
+            if sr != INF_SR:
+                wav = librosa.resample(wav, orig_sr=sr, target_sr=INF_SR)
+            return wav.astype(np.float32)
+        else:
+            wav, _ = librosa.load(path, sr=INF_SR, mono=True)
+            return wav.astype(np.float32)
+
+    def file_to_chunks(path):
+        wav = load_audio_32k_mono(path)
+        target_len = 60 * INF_SR
+        if len(wav) < target_len:
+            wav = np.pad(wav, (0, target_len - len(wav)))
+        elif len(wav) > target_len:
+            wav = wav[:target_len]
+        n_chunks = target_len // INF_CHUNK_N
+        chunks = wav[:n_chunks * INF_CHUNK_N].reshape(n_chunks, INF_CHUNK_N)
+        end_times = np.arange(1, n_chunks + 1) * INF_CHUNK_S
+        return chunks.astype(np.float32), end_times
+
+    def sigmoid_inf(x):
+        return np.where(
+            x >= 0,
+            1.0 / (1.0 + np.exp(-np.clip(x, -50, 50))),
+            np.exp(np.clip(x, -50, 50)) / (1.0 + np.exp(np.clip(x, -50, 50))),
+        ).astype(np.float32)
+
+    def gauss_smooth_final(scores, weights=GAUSSIAN_KERNEL):
+        """Gaussian smooth predictions across the 12 windows within each file.
+        Operates on the leading axis of the per-file slab."""
+        smoothed = scores.reshape(-1, N_WINDOWS, scores.shape[1]).copy()
+        for i in range(smoothed.shape[0]):
+            smoothed[i] = convolve1d(smoothed[i], weights, axis=0, mode='nearest')
+        return smoothed.reshape(-1, scores.shape[1])
+
+    # Discover test files (with train_soundscapes fallback for debugging)
+    test_files = sorted(glob.glob(f'{TEST_DIR}/*.ogg')) if TEST_DIR.is_dir() else []
+    if len(test_files) == 0:
+        fallback = COMP_DIR / "train_soundscapes"
+        if fallback.is_dir():
+            test_files = sorted(glob.glob(f'{fallback}/*.ogg'))[:5]
+            print(f'No test_soundscapes -- using {len(test_files)} train files for debug')
+    print(f'Test files: {len(test_files)}')
+
+    # --- Main inference loop ---
+    t0 = time.time()
+    all_rows, all_preds = [], []
+
+    for file_idx, file_path in enumerate(test_files):
+        basename = os.path.basename(file_path).replace('.ogg', '')
+        chunks, end_times = file_to_chunks(file_path)
+        mel = audio_to_mel(chunks)
+
+        # Accumulate logits in logit space across folds (matches the
+        # smoothing-in-logit-space convention from the other inference notebook).
+        # Per fold: blend clip + frame_max in LOGIT space.
+        logits_sum = np.zeros((chunks.shape[0], NUM_CLASSES), dtype=np.float32)
+        for sess in fold_sessions:
+            outs = sess.run(None, {'mel': mel})
+            clip_logits = outs[0]
+            frame_max = outs[1].max(axis=1)
+            logits_sum += 0.5 * clip_logits + 0.5 * frame_max
+        logits_mean = logits_sum / len(INF_FOLDS)
+
+        # Smooth across windows in logit space, then sigmoid once.
+        logits_smoothed = gauss_smooth_final(logits_mean)
+        probs = sigmoid_inf(logits_smoothed)
+
+        all_rows.extend([f'{basename}_{int(t)}' for t in end_times])
+        all_preds.append(probs)
+
+        if (file_idx + 1) % 50 == 0 or file_idx == 0 or file_idx == len(test_files) - 1:
+            elapsed = time.time() - t0
+            rate = (file_idx + 1) / elapsed
+            print(f'  [{file_idx+1:4d}/{len(test_files)}] {elapsed:.1f}s  {rate:.2f} files/s')
+
+    all_preds_arr = np.concatenate(all_preds) if all_preds else np.zeros((0, NUM_CLASSES), np.float32)
+    print(f'\nInference: {len(all_rows)} rows, {time.time()-t0:.1f}s total')

@@ -1,0 +1,153 @@
+=== exp037_full_pipeline cell ===
+
+--- apply_prior CALLS (not definitions) ---
+  sc_te_adjusted = apply_prior(
+  sc_tr_prior   = apply_prior(
+
+--- rank_aware_scaling CALLS ---
+  probs = rank_aware_scaling(   probs, n_windows=N_WINDOWS,
+
+--- file_confidence_scale CALLS ---
+  probs = file_confidence_scale(probs, n_windows=N_WINDOWS,
+
+--- LightProtoSSM CALLS (constructor with use_cross_attn) ---
+
+--- All lambda_prior= occurrences ---
+  lambda_prior=0.4,
+  lambda_prior=0.4,
+
+
+=== v313_18 / v313_19 / v313_20 (LightProtoSSM + ResSSM + train) ===
+
+--- v313_18 (first 30 lines) ---
+  # ── Cell 7i: LightProtoSSM WITH Cross-Attention ────────────────────────
+  # CHANGE 4: Add cross-attention between SSM layers (matches top notebooks)
+  # Expected gain: +0.004–0.007 vs no cross-attention
+  
+  import torch
+  import torch.nn as nn
+  import torch.nn.functional as F
+  
+  
+  class SelectiveSSM(nn.Module):
+      def __init__(self, d_model, d_state=16, d_conv=4):
+          super().__init__()
+          self.d_model = d_model
+          self.d_state = d_state
+          self.in_proj = nn.Linear(d_model, 2 * d_model, bias=False)
+          self.conv1d = nn.Conv1d(
+              d_model, d_model, d_conv, padding=d_conv - 1, groups=d_model
+          )
+          self.dt_proj = nn.Linear(d_model, d_model, bias=True)
+  
+          A = torch.arange(1, d_state + 1, dtype=torch.float32).unsqueeze(0).expand(
+              d_model, -1
+          )
+          self.A_log = nn.Parameter(torch.log(A))
+          self.D = nn.Parameter(torch.ones(d_model))
+          self.B_proj = nn.Linear(d_model, d_state, bias=False)
+          self.C_proj = nn.Linear(d_model, d_state, bias=False)
+          self.out_proj = nn.Linear(d_model, d_model, bias=False)
+  
+      def forward(self, x):
+
+--- v313_19 (first 30 lines) ---
+  # ── Cell 7i-2: TTA — Circular Shift Test-Time Augmentation ───────────
+  # CHANGE 3: Average ProtoSSM predictions across 5 time shifts
+  # Expected gain: +0.003–0.005 on public LB
+  
+  def run_tta_proto(proto_model, emb_files, sc_files,
+                    site_t, hour_t, shifts=[0, 1, -1, 2, -2]):
+      """
+      CHANGE 3: TTA by circular-shifting 12-window sequences.
+      
+      For each shift s:
+        1. Roll embeddings and perch logits by s windows
+        2. Run ProtoSSM → get predictions
+        3. Roll predictions back by -s (undo shift)
+      
+      Finally average all predictions across shifts.
+      
+      Why this works:
+        - ProtoSSM sees temporal context across all 12 windows
+        - Different starting points expose different context patterns
+        - Averaging over 5 views reduces temporal boundary artifacts
+      """
+      proto_model.eval()
+      all_preds = []
+      
+      emb_t  = torch.tensor(emb_files, dtype=torch.float32)
+      sc_t   = torch.tensor(sc_files,  dtype=torch.float32)
+      
+      for shift in shifts:
+          if shift == 0:
+              e_shifted = emb_t
+
+--- v313_20 (first 30 lines) ---
+  # ── Cell 7j: Residual SSM (second-pass error correction) ──────────────
+  import torch
+  import torch.nn as nn
+  import torch.nn.functional as F
+  
+  class ResidualSSM(nn.Module):
+      """
+      Lightweight second-pass model that learns to correct
+      systematic errors from the first-pass ensemble.
+      
+      Input:  embeddings + first-pass scores (concatenated)
+      Output: additive correction to first-pass scores
+      
+      Key design: output head initialized to zero
+      so corrections start small and only grow if helpful.
+      ~25s training on 59 files.
+      """
+      def __init__(self, d_input=1536, d_scores=234,
+                   d_model=64, d_state=8,
+                   n_classes=234, n_windows=12,
+                   dropout=0.1, n_sites=20, meta_dim=8):
+          super().__init__()
+          self.n_classes = n_classes
+  
+          self.input_proj = nn.Sequential(
+              nn.Linear(d_input + d_scores, d_model),
+              nn.LayerNorm(d_model), nn.GELU(), nn.Dropout(dropout))
+  
+          self.site_emb  = nn.Embedding(n_sites, meta_dim)
+          self.hour_emb  = nn.Embedding(24,      meta_dim)
+
+--- v313_22 (first 30 lines) ---
+  # ── Cell 8b: Full Pipeline OOF ─────────────────────────────────────────
+  
+  def run_pipeline_oof(emb_full, sc_full, Y_full, meta_full, n_splits=5):
+      """
+      Proper full-pipeline OOF.
+      Trains ProtoSSM + MLP on K-1 folds, predicts on held-out fold.
+      ~3-4 min total on CPU. Use this instead of the raw-Perch OOF.
+      """
+      file_meta = (
+          meta_full.drop_duplicates("filename")
+          .reset_index(drop=True)
+      )
+  
+      gkf = GroupKFold(n_splits=n_splits)
+      oof_probs = np.zeros((len(sc_full), N_CLASSES), dtype=np.float32)
+  
+      for fold, (tr_f, va_f) in enumerate(
+          gkf.split(file_meta, groups=file_meta["filename"]), 1
+      ):
+          tr_fnames = set(file_meta.iloc[tr_f]["filename"])
+          va_fnames = set(file_meta.iloc[va_f]["filename"])
+  
+          tr_mask = meta_full["filename"].isin(tr_fnames).values
+          va_mask = meta_full["filename"].isin(va_fnames).values
+  
+          emb_tr_f = emb_full[tr_mask]
+          sc_tr_f = sc_full[tr_mask]
+          Y_tr_f = Y_full[tr_mask]
+          meta_tr_f = meta_full[tr_mask].reset_index(drop=True)
+  
+
+
+=== Cell 'blend' — actual blend logic ===
+  _topk_mean = _sorted[:, -FCS_TOP_K:, :].mean(axis=1, keepdims=True)
+  _scale = np.power(_topk_mean, FCS_POWER)

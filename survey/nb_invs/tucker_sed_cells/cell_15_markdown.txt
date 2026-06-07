@@ -1,0 +1,5 @@
+## S6 — Fold Loop + ONNX Export
+
+Train all folds, save the best checkpoint per fold, then export each to ONNX for fast inference.
+
+The ONNX export captures just the classification path (no distillation head). The exported model takes mel spectrograms as input and outputs clip-level and frame-level logits. This means inference only needs `onnxruntime` + `librosa` — no PyTorch required.

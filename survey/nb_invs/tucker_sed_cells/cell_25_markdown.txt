@@ -1,0 +1,3 @@
+## Write submission.csv
+
+Standard BirdCLEF submission format: `row_id` + 234 species probability columns.

@@ -1,0 +1,1165 @@
+
+========= cell 0 id=hdr (markdown, 39 lines) =========
+  # exp082 R2 — exp081 base + 20s window (Colab Pro G4)
+  
+  **exp082 = exp081 (10s) を Window 20s に拡張**
+  
+  ## Changes from exp081 (R2)
+  - `TRAIN_DURATION` / `VAL_DURATION`: 10 → **20**
+  - Mel spec: Tucker (256/2048/512) → **Babych (224/4096/1252)** ★ 20s に最適
+    - 20s × 32000 / 1252 = 511 frames (handles long context efficiently)
+  - `N_WINDOWS` in pseudo_infer: 6 → **3** (60s / 20s = 3 windows/file)
+  - LabeledSC aggregation: **4× 5s → 1× 20s** (max merge)
+  - Perch distill: **4× 5s averaged** (was 2× 5s for 10s)
+  - Output: `output/exp082/r2/`, Kaggle slug `birdclef2026-exp082-weights`
+  
+  ## Why 20s
+  - exp081 (10s) は exp048 と diversity 軸として並行
+  - 20s は更に長 context、Aves/Amphibia long call を full capture
+  - Tucker SED + e17 (5s)、exp081 (10s)、exp082 (20s) の 3 軸 temporal diversity 構築
+  
+  ## Past 20s 失敗の正体
+  - M3' / M7 (LB 0.85) = **Babych init + non-Perch path** が失敗原因
+  - exp082 = **Perch distill + ImageNet init** で 20s は untested but expected to work
+  
+  ## 不変項目
+  - Backbone: eca_nfnet_l0 (24M)
+  - Init: ImageNet (no Babych init)
+  - LR 3e-4 (NFNet rule)
+  - Batch: 192 (G4 96GB、Babych mel で frame 511 = 10s 相当)
+  - N_TOTAL_EPOCHS 25 (R1) / 20 (R2)
+  - ALPHA_DISTILL 1.0、Perch v2 direct distill
+  
+  ## 想定時間 (G4 96GB)
+  - 学習: ~6-8h (R2)
+  - pseudo gen: ~30 min
+  - Perch 4× cost: +10-20% training time
+  
+  ## 期待
+  - val_ns22: 0.92-0.94 (long context lift 期待)
+  - LB single: 0.92-0.94
+  - Blend (exp048 + exp081 + exp082) +0.003-0.008
+
+========= cell 1 id=setup (code, 48 lines) =========
+  # ============================================================
+  # Cell 1: Setup — Drive mount, pip install, kaggle.json
+  # ============================================================
+  !pip install -q timm onnxruntime-gpu librosa soundfile scipy
+  
+  from google.colab import drive
+  drive.mount("/content/drive", force_remount=False)
+  
+  import os, json, shutil, time, subprocess
+  from pathlib import Path
+  
+  DRIVE_INPUT_DIR  = Path("/content/drive/MyDrive/kaggle/birdclef2026")
+  DRIVE_R1_PSEUDO  = DRIVE_INPUT_DIR / "output" / "exp082" / "r1-pseudo" / "pseudo_labels.csv"
+  DRIVE_OUTPUT_DIR = DRIVE_INPUT_DIR / "output" / "exp082" / "r2"
+  DRIVE_R2_PSEUDO_DIR = DRIVE_INPUT_DIR / "output" / "exp082" / "r2-pseudo"
+  DRIVE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+  DRIVE_R2_PSEUDO_DIR.mkdir(parents=True, exist_ok=True)
+  assert DRIVE_INPUT_DIR.exists(), f"Drive input folder missing: {DRIVE_INPUT_DIR}"
+  assert DRIVE_R1_PSEUDO.exists(), f"R1 pseudo CSV missing: {DRIVE_R1_PSEUDO}"
+  print(f"Drive input:    {DRIVE_INPUT_DIR}")
+  print(f"R1 pseudo CSV:  {DRIVE_R1_PSEUDO} ({DRIVE_R1_PSEUDO.stat().st_size/1e6:.1f}MB)")
+  print(f"Drive R2 ckpt:  {DRIVE_OUTPUT_DIR}")
+  print(f"Drive R2 pseudo:{DRIVE_R2_PSEUDO_DIR}")
+  
+  # kaggle.json
+  KJ_CANDIDATES = [
+      DRIVE_INPUT_DIR / "kaggle.json",
+      Path("/content/drive/MyDrive/kaggle.json"),
+  ]
+  KJ = next((p for p in KJ_CANDIDATES if p.exists()), None)
+  if KJ is not None:
+      KAGGLE_CFG = Path.home() / ".kaggle"
+      KAGGLE_CFG.mkdir(parents=True, exist_ok=True)
+      shutil.copy(str(KJ), str(KAGGLE_CFG / "kaggle.json"))
+      os.chmod(str(KAGGLE_CFG / "kaggle.json"), 0o600)
+      creds = json.loads(KJ.read_text())
+      if creds.get("key", "").startswith("KGAT_"):
+          os.environ["KAGGLE_API_TOKEN"] = creds["key"]
+      print(f"kaggle.json: {KJ}")
+  else:
+      print("kaggle.json not found")
+  
+  LOCAL_DATA = Path("/content/data")
+  LOCAL_OUT  = Path("/content/output")
+  LOCAL_DATA.mkdir(parents=True, exist_ok=True)
+  LOCAL_OUT.mkdir(parents=True, exist_ok=True)
+  print(f"Local data: {LOCAL_DATA}")
+  print(f"Local out:  {LOCAL_OUT}")
+
+========= cell 2 id=dl_data (code, 108 lines) =========
+  # ============================================================
+  # Cell 2: Data prep — Kaggle API direct DL + R1 pseudo copy (with tqdm)
+  # ============================================================
+  import time, zipfile, subprocess
+  from kaggle.api.kaggle_api_extended import KaggleApi
+  from tqdm.auto import tqdm
+  
+  api = KaggleApi(); api.authenticate()
+  print("kaggle authenticated")
+  
+  T0_total = time.time()
+  
+  TA_DIR = LOCAL_DATA / "train_audio"
+  TS_DIR = LOCAL_DATA / "train_soundscapes"
+  
+  need_dl = (
+      not TA_DIR.exists() or sum(1 for _ in TA_DIR.rglob("*.ogg")) < 40000 or
+      not TS_DIR.exists() or sum(1 for _ in TS_DIR.glob("*.ogg")) < 10000
+  )
+  
+  if need_dl:
+      print(f"\n[1/2] Downloading birdclef-2026 (~25GB) via Kaggle API...")
+      t0 = time.time()
+      api.competition_download_files(
+          "birdclef-2026",
+          path=str(LOCAL_DATA),
+          force=False, quiet=False,
+      )
+      print(f"  DL done in {(time.time()-t0)/60:.1f} min")
+      zips = list(LOCAL_DATA.glob("birdclef-2026*.zip"))
+      assert zips
+      zip_path = zips[0]
+      print(f"\n[2/2] Extracting {zip_path.name} ({zip_path.stat().st_size/1e9:.1f}GB)...")
+      t_extract = time.time()
+      with zipfile.ZipFile(zip_path) as zf:
+          infos = zf.infolist()
+          total_bytes = sum(i.file_size for i in infos)
+          pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, unit_divisor=1024,
+                      desc="extract", smoothing=0.05, mininterval=1.0)
+          for info in infos:
+              zf.extract(info, LOCAL_DATA)
+              pbar.update(info.file_size)
+          pbar.close()
+      print(f"  extracted in {(time.time()-t_extract)/60:.1f} min")
+      zip_path.unlink()
+  else:
+      print("Competition data already present locally")
+  
+  n_ta = sum(1 for _ in TA_DIR.rglob("*.ogg")) if TA_DIR.exists() else 0
+  n_ts = sum(1 for _ in TS_DIR.glob("*.ogg")) if TS_DIR.exists() else 0
+  print(f"\n  train_audio: {n_ta}, train_soundscapes: {n_ts}")
+  
+  # Competition CSVs
+  comp = LOCAL_DATA / "competition"
+  comp.mkdir(parents=True, exist_ok=True)
+  for fn in ["train.csv", "taxonomy.csv", "sample_submission.csv", "train_soundscapes_labels.csv"]:
+      src_in_root = LOCAL_DATA / fn
+      dst = comp / fn
+      if src_in_root.exists() and not dst.exists():
+          shutil.copy2(str(src_in_root), str(dst))
+  
+  # Perch ONNX
+  po_dir = LOCAL_DATA / "perch-onnx"
+  po_dir.mkdir(parents=True, exist_ok=True)
+  PERCH_PATH = po_dir / "perch_v2_no_dft.onnx"
+  if not PERCH_PATH.exists():
+      drive_perch = list(DRIVE_INPUT_DIR.rglob("perch_v2*.onnx"))
+      if drive_perch:
+          src = drive_perch[0]; sz = src.stat().st_size
+          print(f"\nCopying Perch ONNX from Drive ({sz/1e9:.2f}GB)...")
+          with open(src, "rb") as fin, open(PERCH_PATH, "wb") as fout:
+              pbar = tqdm(total=sz, unit="B", unit_scale=True, unit_divisor=1024,
+                          desc="Perch copy", mininterval=1.0)
+              while True:
+                  buf = fin.read(8*1024*1024)
+                  if not buf: break
+                  fout.write(buf); pbar.update(len(buf))
+              pbar.close()
+      else:
+          print("\nPerch ONNX not on Drive, DL from Kaggle...")
+  ... (28 more lines)
+
+========= cell 3 id=config (code, 117 lines) =========
+  # ============================================================
+  # Cell 3: Imports + Config + Paths
+  # ============================================================
+  import os, time, json, gc, random, math
+  from pathlib import Path
+  import numpy as np
+  import pandas as pd
+  
+  import torch
+  import torch.nn as nn
+  import torch.nn.functional as F
+  from torch.utils.data import Dataset, DataLoader, ConcatDataset
+  from torch.cuda.amp import GradScaler, autocast
+  import torchaudio
+  import timm
+  from sklearn.metrics import roc_auc_score
+  from sklearn.model_selection import StratifiedKFold, GroupKFold
+  import warnings
+  warnings.filterwarnings("ignore")
+  
+  # ===== Paths =====
+  BASE = LOCAL_DATA / "competition"
+  TA_DIR = LOCAL_DATA / "train_audio"
+  TS_DIR = LOCAL_DATA / "train_soundscapes"
+  TAXO_PATH = BASE / "taxonomy.csv"
+  TRAIN_CSV = BASE / "train.csv"
+  SAMPLE_SUB_PATH = BASE / "sample_submission.csv"
+  LABELS_PATH = BASE / "train_soundscapes_labels.csv"
+  PERCH_PATH = LOCAL_DATA / "perch-onnx" / "perch_v2_no_dft.onnx"
+  PSEUDO_CSV_PATH = LOCAL_DATA / "r1-pseudo" / "pseudo_labels.csv"
+  OUT_DIR = LOCAL_OUT
+  print(f"BASE: {BASE}")
+  print(f"TA_DIR: {TA_DIR.exists()}, TS_DIR: {TS_DIR.exists()}")
+  print(f"PERCH: {PERCH_PATH.exists()}, PSEUDO: {PSEUDO_CSV_PATH.exists()}")
+  
+  # ===== Reproducibility =====
+  SEED = 42
+  random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
+  torch.cuda.manual_seed(SEED)
+  os.environ["PYTHONHASHSEED"] = str(SEED)
+  torch.backends.cudnn.benchmark = True
+  torch.backends.cudnn.deterministic = False
+  
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  print(f"Device: {device}")
+  if torch.cuda.is_available():
+      print(f"GPU: {torch.cuda.get_device_name(0)}")
+      print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
+  
+  # ===== Config =====
+  NUM_CLASSES = 234
+  SR = 32000
+  TRAIN_DURATION = 20   # ★ exp082: 10 → 20
+  VAL_DURATION   = 20   # ★ exp082: 10 → 20
+  TRAIN_SAMPLES  = SR * TRAIN_DURATION
+  VAL_SAMPLES    = SR * VAL_DURATION
+  N_FFT          = 4096   # ★ exp082 Babych spec for 20s
+  HOP_LENGTH     = 1252   # ★ exp082 Babych spec (20s × 32k / 1252 = 511 frames)
+  N_MELS         = 224    # ★ exp082 Babych spec
+  FMIN           = 0      # ★ exp082 Babych spec
+  FMAX           = 16000
+  
+  BACKBONE = "eca_nfnet_l0"
+  
+  USE_PERCH_DISTILL = True
+  PERCH_EMBED_DIM = 1536
+  ALPHA_DISTILL = 1.0
+  
+  N_FOLDS = 5
+  FOLDS = [0]
+  FORCE_FRESH = True       # ★ R2 は新規初期化 (Babych 流)、Drive 上に既存 R2 ckpt があっても無視
+  # ★ R2 on Blackwell: VRAM 96GB で batch=192、ただし NFNet rule で LR は 3e-4 据え置き
+  # [[feedback_nfnet_lr_no_sqrt_scaling]]: NFNet は AGC 無し環境で sqrt LR scaling すると overshoot
+  N_TOTAL_EPOCHS = 20      # ★ [[feedback_default_epochs_20]]、best ckpt 自動保存で peak 取り損ねなし
+  BATCH = 192              # ★ Blackwell 96GB の VRAM 活用、R1 v2 と同じ
+  LR = 3e-4                # ★ NFNet rule: sqrt scaling 厳禁、batch 増しても 3e-4 据え置き
+  MIN_LR = 1e-6
+  WD = 1e-4
+  WARMUP_EPOCHS = 3
+  
+  ... (37 more lines)
+
+========= cell 4 id=load_data (code, 214 lines) =========
+  # ============================================================
+  # Cell 4: Load data — train.csv, taxonomy, labeled SS, R1 pseudo CSV
+  # ============================================================
+  sample_sub = pd.read_csv(SAMPLE_SUB_PATH)
+  PRIMARY_LABELS = sample_sub.columns[1:].tolist()
+  LABEL2IDX = {label: idx for idx, label in enumerate(PRIMARY_LABELS)}
+  assert len(PRIMARY_LABELS) == NUM_CLASSES
+  
+  taxonomy = pd.read_csv(TAXO_PATH)
+  label_to_taxon = dict(zip(taxonomy["primary_label"].astype(str),
+                            taxonomy["class_name"].astype(str)))
+  TAXON_MASKS = {t: np.array([i for i, l in enumerate(PRIMARY_LABELS)
+                              if label_to_taxon.get(l, "") == t])
+                 for t in ["Aves", "Amphibia", "Insecta", "Mammalia", "Reptilia"]}
+  
+  train_df = pd.read_csv(TRAIN_CSV)
+  train_df = train_df[train_df["primary_label"].astype(str).isin(LABEL2IDX)].reset_index(drop=True)
+  train_df["filename"] = train_df["filename"].astype(str)
+  print(f"Focal train.csv: {len(train_df)} rows")
+  
+  def _check_exists(fn):
+      return (TA_DIR / fn).exists()
+  print("Checking focal file existence...")
+  _t0 = time.time()
+  train_df["exists"] = train_df["filename"].map(_check_exists)
+  train_df = train_df[train_df["exists"]].drop(columns=["exists"]).reset_index(drop=True)
+  print(f"  {len(train_df)} focal files exist ({time.time()-_t0:.1f}s)")
+  train_df["original_idx"] = np.arange(len(train_df))
+  
+  skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+  train_df["fold"] = -1
+  for fold, (_, val_idx) in enumerate(skf.split(train_df, train_df["primary_label"])):
+      train_df.loc[val_idx, "fold"] = fold
+  print(f"Focal fold distribution: {train_df['fold'].value_counts().sort_index().to_dict()}")
+  
+  focal_secondary_labels = {}
+  for idx, row in train_df.iterrows():
+      sec = row.get("secondary_labels", "")
+      if pd.isna(sec) or sec in ("", "[]"):
+          continue
+      try:
+          sec_list = eval(sec) if isinstance(sec, str) else []
+      except Exception:
+          continue
+      valid = [s for s in sec_list if s in LABEL2IDX]
+      if valid:
+          focal_secondary_labels[int(row["original_idx"])] = valid
+  print(f"Focal secondary labels: {len(focal_secondary_labels)} files")
+  
+  counts = train_df["primary_label"].value_counts()
+  rare_species = counts[counts < MIN_SAMPLE].index.tolist()
+  extra_rows = []
+  for sp in rare_species:
+      sp_rows = train_df[train_df["primary_label"] == sp]
+      n_copies = int(np.ceil(MIN_SAMPLE / len(sp_rows))) - 1
+      for _ in range(n_copies):
+          extra_rows.append(sp_rows)
+  n_before = len(train_df)
+  if extra_rows:
+      train_df = pd.concat([train_df] + extra_rows, ignore_index=True)
+  print(f"Upsampled {len(rare_species)} rare species (min={MIN_SAMPLE}): {n_before} -> {len(train_df)}")
+  
+  # Labeled SS
+  if LABELS_PATH.exists():
+      sc_labels_raw = pd.read_csv(LABELS_PATH).drop_duplicates()
+      if sc_labels_raw["start"].dtype == object:
+          sc_labels_raw["start_sec"] = pd.to_timedelta(sc_labels_raw["start"]).dt.total_seconds().astype(int)
+      else:
+          sc_labels_raw["start_sec"] = sc_labels_raw["start"].astype(int)
+  
+      sc_meta = (sc_labels_raw[["filename", "start_sec"]]
+                 .drop_duplicates()
+                 .reset_index(drop=True))
+      if "site" in sc_labels_raw.columns:
+          site_map = sc_labels_raw.groupby("filename")["site"].first().to_dict()
+          sc_meta["site"] = sc_meta["filename"].map(site_map).fillna("UNK")
+      else:
+          sc_meta["site"] = "UNK"
+  
+      Y_SC = np.zeros((len(sc_meta), NUM_CLASSES), dtype=np.float32)
+  ... (134 more lines)
+
+========= cell 5 id=model (code, 123 lines) =========
+  # ============================================================
+  # Cell 5: Model — Mel + SpecAugment + Perch teacher + DistillHead + BirdSEDModel
+  # ============================================================
+  import onnxruntime as ort
+  
+  class MelSpecTransform(nn.Module):
+      def __init__(self):
+          super().__init__()
+          self.mel_spec = torchaudio.transforms.MelSpectrogram(
+              sample_rate=SR, n_fft=N_FFT, hop_length=HOP_LENGTH,
+              n_mels=N_MELS, f_min=FMIN, f_max=FMAX, power=2.0,
+          )
+          self.db_transform = torchaudio.transforms.AmplitudeToDB(top_db=80)
+      def forward(self, waveform):
+          return self.db_transform(self.mel_spec(waveform))
+  
+  class SpecAugment(nn.Module):
+      def __init__(self):
+          super().__init__()
+          self.freq_mask = torchaudio.transforms.FrequencyMasking(freq_mask_param=FREQ_MASK_PARAM)
+          self.time_mask = torchaudio.transforms.TimeMasking(time_mask_param=TIME_MASK_PARAM)
+      def forward(self, mel):
+          for _ in range(NUM_FREQ_MASKS): mel = self.freq_mask(mel)
+          for _ in range(NUM_TIME_MASKS): mel = self.time_mask(mel)
+          return mel
+  
+  class PerchTeacher:
+      def __init__(self, onnx_path, device_str="cuda"):
+          providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] \
+              if device_str == "cuda" else ["CPUExecutionProvider"]
+          self.session = ort.InferenceSession(str(onnx_path), providers=providers)
+          self.input_name = self.session.get_inputs()[0].name
+          self._embed_idx = None
+          for i, o in enumerate(self.session.get_outputs()):
+              if o.shape and o.shape[-1] == PERCH_EMBED_DIM:
+                  self._embed_idx = i; break
+          if self._embed_idx is None:
+              self._embed_idx = 1
+          print(f"PerchTeacher: embed_idx={self._embed_idx}, providers={self.session.get_providers()}")
+  
+      @torch.no_grad()
+      def embed(self, waveforms_5s):
+          wav_np = waveforms_5s.cpu().numpy().astype(np.float32)
+          results = self.session.run(None, {self.input_name: wav_np})
+          return torch.from_numpy(results[self._embed_idx]).float()
+  
+  class DistillHead(nn.Module):
+      def __init__(self, backbone_dim, embed_dim=1536):
+          super().__init__()
+          self.proj = nn.Linear(backbone_dim, embed_dim)
+      def forward(self, feature_map):
+          return self.proj(feature_map.mean(dim=[2, 3]))
+  
+  class GeMFreqPool(nn.Module):
+      def __init__(self, p_init=3.0, eps=1e-6):
+          super().__init__()
+          self.p = nn.Parameter(torch.tensor(float(p_init)))
+          self.eps = eps
+      def forward(self, x):
+          p = self.p.clamp(min=1.0)
+          x = x.clamp(min=self.eps).pow(p)
+          x = x.mean(dim=2)
+          return x.pow(1.0 / p)
+  
+  class BirdSEDModel(nn.Module):
+      def __init__(self, backbone_name=BACKBONE, num_classes=NUM_CLASSES,
+                   drop_path_rate=0.1, hidden_dim=512):
+          super().__init__()
+          self.backbone = timm.create_model(
+              backbone_name, pretrained=True, in_chans=1,
+              num_classes=0, global_pool="", drop_path_rate=drop_path_rate,
+          )
+          with torch.no_grad():
+              n_tf = TRAIN_SAMPLES // HOP_LENGTH + 1
+              dummy = torch.randn(1, 1, N_MELS, n_tf)
+              feat = self.backbone(dummy)
+              self.backbone_dim = feat.shape[1]
+              print(f"Backbone out: {tuple(feat.shape)}  (C={self.backbone_dim})")
+  
+          self.gem_freq = GeMFreqPool(p_init=3.0)
+  ... (43 more lines)
+
+========= cell 6 id=dataset (code, 217 lines) =========
+  # ============================================================
+  # Cell 6: Datasets — FocalDS, LabeledSCDS, PseudoScDS, samplers
+  # ============================================================
+  import soundfile as sf
+  import librosa
+  from functools import lru_cache
+  
+  # LRU cache for full 60s SS waveforms (12 windows × 5s same file → cache hit)
+  # ★ workers=8 で並列度上げる時、cache 容量も増やす (per-worker、各 ~4GB RAM)
+  @lru_cache(maxsize=512)
+  def _load_full_audio_cached(path_str):
+      try:
+          wav, sr = sf.read(path_str, dtype="float32", always_2d=False)
+          if wav.ndim > 1:
+              wav = wav.mean(axis=1)
+          if sr != SR:
+              wav = librosa.resample(wav, orig_sr=sr, target_sr=SR)
+          return wav.astype(np.float32)
+      except Exception:
+          return None
+  
+  def _load_ogg(path, n_samples_target, start_sec=None):
+      if start_sec is not None:
+          full = _load_full_audio_cached(str(path))
+          if full is None:
+              return None
+          start = int(start_sec * SR)
+          end = start + n_samples_target
+          if end <= len(full):
+              return full[start:end].copy()
+          out = np.zeros(n_samples_target, dtype=np.float32)
+          avail = full[start:start + n_samples_target]
+          out[:len(avail)] = avail
+          return out
+      try:
+          wav, sr = sf.read(str(path), dtype="float32", always_2d=False)
+          if wav.ndim > 1:
+              wav = wav.mean(axis=1)
+          if sr != SR:
+              wav = librosa.resample(wav, orig_sr=sr, target_sr=SR)
+          return wav.astype(np.float32)
+      except Exception:
+          return None
+  
+  def extract_chunk_np(waveform, start_sample, n_samples):
+      total = len(waveform)
+      if total <= n_samples:
+          return np.pad(waveform, (n_samples - total, 0))
+      end = start_sample + n_samples
+      if end > total:
+          start_sample = max(0, total - n_samples)
+      return waveform[start_sample:start_sample + n_samples]
+  
+  def apply_aug(w):
+      if np.random.random() < AUG_PROB:
+          w = w * (10 ** (np.random.uniform(*AUG_GAIN_DB_RANGE) / 20))
+      if np.random.random() < AUG_PROB:
+          sp = (w ** 2).mean()
+          if sp > 1e-10:
+              w = w + np.random.randn(*w.shape).astype(w.dtype) * np.sqrt(
+                  sp / (10 ** (np.random.uniform(*AUG_NOISE_SNR_DB_RANGE) / 10)))
+      return w
+  
+  
+  class FocalDS(Dataset):
+      def __init__(self, df, l2i, secondary_lookup=None, aug=False):
+          self.df = df.reset_index(drop=True)
+          self.l2i = l2i
+          self.aug = aug
+          self.secondary_lookup = secondary_lookup
+          self.filenames = self.df["filename"].values
+          self.primary = self.df["primary_label"].astype(str).values
+          self.original_idx = self.df["original_idx"].values if "original_idx" in self.df.columns else None
+  
+      def __len__(self): return len(self.df)
+  
+      def _load_chunk(self, i):
+          fn = self.filenames[i]
+          path = TA_DIR / fn
+          wav = _load_ogg(path, n_samples_target=None)
+  ... (137 more lines)
+
+========= cell 7 id=eval (code, 135 lines) =========
+  # ============================================================
+  # Cell 7: Eval — AUC + validation predictor
+  # ============================================================
+  def compute_macro_auc(y_true, y_pred, mask=None, class_mask=None):
+      if mask is not None:
+          y_true, y_pred = y_true[mask], y_pred[mask]
+      if class_mask is not None:
+          y_true, y_pred = y_true[:, class_mask], y_pred[:, class_mask]
+      aucs = []
+      for c in range(y_true.shape[1]):
+          col = y_true[:, c]
+          if col.sum() == 0 or col.sum() == len(col):
+              continue
+          try:
+              aucs.append(roc_auc_score(col, y_pred[:, c]))
+          except ValueError:
+              continue
+      return (np.mean(aucs) if aucs else float("nan")), len(aucs)
+  
+  
+  def full_eval(y_true, y_pred, ns22_mask, taxon_masks):
+      r = {}
+      a, n = compute_macro_auc(y_true, y_pred)
+      r["macro_auc_all"] = round(float(a) if not np.isnan(a) else 0.0, 4)
+      r["n_all"] = n
+      a, n = compute_macro_auc(y_true, y_pred, mask=ns22_mask)
+      r["non_s22_macro"] = round(float(a) if not np.isnan(a) else 0.0, 4)
+      r["n_ns22"] = n
+      per_taxon = {}
+      for t, cm in taxon_masks.items():
+          a, n = compute_macro_auc(y_true, y_pred, mask=ns22_mask, class_mask=cm)
+          per_taxon[t] = round(float(a) if not np.isnan(a) else 0.0, 4)
+      r["per_taxon"] = per_taxon
+      return r
+  
+  
+  def _load_val_waveforms(val_sc_df):
+      wavs = []
+      for _, row in val_sc_df.iterrows():
+          fn = str(row["filename"])
+          if not fn.endswith(".ogg"): fn = fn + ".ogg"
+          wav = _load_ogg(TS_DIR / fn, n_samples_target=VAL_SAMPLES,
+                           start_sec=float(row["start_sec"]))
+          if wav is None or len(wav) == 0:
+              wav = np.zeros(VAL_SAMPLES, dtype=np.float32)
+          if len(wav) < VAL_SAMPLES:
+              wav = np.pad(wav, (0, VAL_SAMPLES - len(wav)))
+          else:
+              wav = wav[:VAL_SAMPLES]
+          wavs.append(torch.from_numpy(wav.astype(np.float32)).unsqueeze(0))
+      return wavs
+  
+  
+  def _predict_from_waveforms(model, mel_transform, wav_list, batch_size=64):
+      model.eval()
+      preds_clip, preds_fmax, preds_blend = [], [], []
+      with torch.no_grad():
+          for s in range(0, len(wav_list), batch_size):
+              batch = torch.stack(wav_list[s:s+batch_size]).to(device)
+              mel = mel_transform(batch)
+              B = mel.size(0)
+              for i in range(B):
+                  mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+              mel = mel.to(memory_format=torch.channels_last)
+              with autocast():
+                  clip_logits, framewise = model(mel, return_framewise=True)
+                  frame_max = framewise.max(dim=1).values
+                  p_clip = torch.sigmoid(clip_logits).float().cpu().numpy()
+                  p_fmax = torch.sigmoid(frame_max).float().cpu().numpy()
+                  p_blend = 0.5 * p_clip + 0.5 * p_fmax
+              preds_clip.append(p_clip); preds_fmax.append(p_fmax); preds_blend.append(p_blend)
+      return {"clip": np.concatenate(preds_clip),
+              "fmax": np.concatenate(preds_fmax),
+              "blend": np.concatenate(preds_blend)}
+  
+  print("OK eval helpers ready")
+  
+  # ============================================================
+  # ★ M7-style helpers (per-species AUC, class stats, taxon str)
+  # ============================================================
+  ... (55 more lines)
+
+========= cell 8 id=build_active (code, 20 lines) =========
+  # ============================================================
+  # Cell 8: build_active_datasets (R2: 3 sources)
+  # ============================================================
+  def build_active_datasets(fold_k):
+      items = []
+      fds = FocalDS(train_df[train_df["fold"] != fold_k],
+                    LABEL2IDX, secondary_lookup=focal_secondary_labels, aug=True)
+      items.append(("focal", fds, len(fds)))
+      if len(sc_meta) > 0:
+          vm = sc_meta["fold"].values == fold_k
+          sc_train_df = sc_meta[~vm].reset_index(drop=True)
+          Y_tr = Y_SC[~vm]
+          sds = LabeledSCDS(Y_tr, sc_train_df, aug=True)
+          items.append(("labeled_sc", sds, len(sds)))
+      # Pseudo SC (not fold-filtered — unlabeled-derived, no leakage)
+      pds = PseudoScDS(pseudo_meta, Y_PSEUDO, TS_DIR, aug=True)
+      items.append(("pseudo_sc", pds, len(pds)))
+      return items
+  
+  print("OK build_active_datasets ready (focal + labeled_sc + pseudo_sc)")
+
+========= cell 9 id=resume_or_init (code, 63 lines) =========
+  # ============================================================
+  # Cell 9: init — fresh R2 start, optionally resume from Drive
+  # ============================================================
+  FOLD_K = FOLDS[0]
+  print(f"This run trains fold {FOLD_K}")
+  
+  active = build_active_datasets(FOLD_K)
+  NAMES, DATASETS, SIZES = zip(*active)
+  NAMES, DATASETS, SIZES = list(NAMES), list(DATASETS), list(SIZES)
+  print(f"Streams: {dict(zip(NAMES, SIZES))}")
+  
+  mds = ConcatDataset(DATASETS)
+  N_STEPS_PER_EP = max(100, int(sum(SIZES) / BATCH))
+  print(f"steps/epoch: {N_STEPS_PER_EP}")
+  
+  model = make_model()
+  optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WD)
+  scaler = GradScaler()
+  
+  warmup_steps = N_STEPS_PER_EP * WARMUP_EPOCHS
+  total_steps  = N_STEPS_PER_EP * N_TOTAL_EPOCHS
+  warmup_sched = torch.optim.lr_scheduler.LinearLR(
+      optimizer, start_factor=1/25, end_factor=1.0, total_iters=warmup_steps)
+  cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+      optimizer, T_max=total_steps - warmup_steps, eta_min=MIN_LR)
+  scheduler = torch.optim.lr_scheduler.SequentialLR(
+      optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_steps])
+  
+  start_epoch = 0
+  best_ns22 = -1.0
+  best_macro = -1.0
+  history = []
+  resumed = False
+  
+  # Optional resume from Drive R2
+  DRIVE_LATEST = DRIVE_OUTPUT_DIR / "ckpt_latest.pth"
+  if FORCE_FRESH and DRIVE_LATEST.exists():
+      print(f"\nFORCE_FRESH=True: ignoring existing R2 ckpt {DRIVE_LATEST}, starting fresh")
+  elif DRIVE_LATEST.exists():
+      print(f"\nFound Drive R2 ckpt: {DRIVE_LATEST}")
+      try:
+          state = torch.load(str(DRIVE_LATEST), map_location=device, weights_only=False)
+      except TypeError:
+          state = torch.load(str(DRIVE_LATEST), map_location=device)
+      model.load_state_dict(state["model_state"])
+      optimizer.load_state_dict(state["optimizer_state"])
+      scheduler.load_state_dict(state["scheduler_state"])
+      scaler.load_state_dict(state["scaler_state"])
+      start_epoch = int(state["epoch"])
+      best_ns22 = float(state.get("best_ns22", -1.0))
+      best_macro = float(state.get("best_macro", -1.0))
+      history = state.get("history", [])
+      resumed = True
+      print(f"=== RESUMED from epoch {start_epoch}/{N_TOTAL_EPOCHS} ===")
+      print(f"    best_ns22={best_ns22:.4f}, best_macro={best_macro:.4f}, history_len={len(history)}")
+      src = DRIVE_OUTPUT_DIR / "history.json"
+      if src.exists():
+          shutil.copy(str(src), str(OUT_DIR / "history.json"))
+  else:
+      print("\nNo Drive R2 ckpt; starting fresh R2")
+  
+  if start_epoch >= N_TOTAL_EPOCHS:
+      print(f"\nAlready trained to epoch {start_epoch}/{N_TOTAL_EPOCHS}.")
+
+========= cell 10 id=val_prep (code, 19 lines) =========
+  # ============================================================
+  # Cell 10: Val prep — load val waveforms once
+  # ============================================================
+  if len(sc_meta) > 0:
+      vm = sc_meta["fold"].values == FOLD_K
+      val_sc_df = sc_meta[vm].reset_index(drop=True)
+      Y_val = Y_SC[vm]
+      ns22_val = non_s22_mask_sc[vm]
+      print(f"Val: {len(val_sc_df)} SS windows for fold {FOLD_K}")
+      print(f"  loading val waveforms...")
+      _t0 = time.time()
+      val_wavs = _load_val_waveforms(val_sc_df)
+      print(f"  loaded in {time.time()-_t0:.1f}s")
+  else:
+      val_sc_df = pd.DataFrame()
+      Y_val = np.zeros((0, NUM_CLASSES), dtype=np.float32)
+      ns22_val = np.zeros(0, dtype=bool)
+      val_wavs = []
+      print("No labeled SS for validation")
+
+========= cell 11 id=train_loop (code, 229 lines) =========
+  # ============================================================
+  # Cell 11: Training loop — Drive mirror per epoch
+  # ============================================================
+  mel_transform = MelSpecTransform().to(device)
+  spec_augment = SpecAugment().to(device)
+  perch_teacher = PerchTeacher(PERCH_PATH, "cuda" if torch.cuda.is_available() else "cpu") \
+                  if USE_PERCH_DISTILL else None
+  
+  def mirror_to_drive(local_path: Path, dst_name: str = None):
+      try:
+          name = dst_name or local_path.name
+          shutil.copy2(str(local_path), str(DRIVE_OUTPUT_DIR / name))
+      except Exception as e:
+          print(f"  [WARN] mirror_to_drive failed for {local_path.name}: {e}")
+  
+  epoch_times = []
+  trained_this_session = 0
+  ep = start_epoch
+  
+  for epoch in range(start_epoch, N_TOTAL_EPOCHS):
+      elapsed = time.time() - TRAIN_START
+      if epoch_times:
+          est_next = max(epoch_times[-3:])
+          if elapsed + est_next * 1.3 > MAX_RUNTIME_SEC:
+              print(f"\n[stop] Time budget exhausted before epoch {epoch+1}/{N_TOTAL_EPOCHS}")
+              break
+  
+      ep_start = time.time()
+      model.train()
+  
+      smp = MixSamp(SIZES, NAMES, SHARES, BATCH, N_STEPS_PER_EP, seed=42 + epoch)
+      train_loader = DataLoader(
+          mds, batch_sampler=smp, collate_fn=collate_m,
+          num_workers=NUM_WORKERS,
+          persistent_workers=PERSISTENT_WORKERS if NUM_WORKERS > 0 else False,
+          pin_memory=True,
+          prefetch_factor=4 if NUM_WORKERS > 0 else None,   # 2→4
+      )
+  
+      el, el_cls, el_dist, nb_count = 0.0, 0.0, 0.0, 0
+      for batch_idx, (wav, lb, wt, mk, sr) in enumerate(train_loader):
+          wav, lb, wt, mk = wav.to(device, non_blocking=True), lb.to(device, non_blocking=True), \
+                            wt.to(device, non_blocking=True), mk.to(device, non_blocking=True)
+          sw = mk_sw(sr).to(device, non_blocking=True)
+  
+          with torch.no_grad():
+              mel = mel_transform(wav)
+              B = mel.size(0)
+              for i in range(B):
+                  mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+              mel = spec_augment(mel)
+              mel = mel.to(memory_format=torch.channels_last)
+  
+          with autocast():
+              if USE_PERCH_DISTILL:
+                  clip_logits, framewise, distill_emb = model(mel, return_framewise=True,
+                                                                return_distill=True)
+              else:
+                  clip_logits, framewise = model(mel, return_framewise=True)
+  
+              frame_max_logits = framewise.max(dim=1).values
+              bce_clip = F.binary_cross_entropy_with_logits(clip_logits, lb, reduction="none")
+              bce_frame = F.binary_cross_entropy_with_logits(frame_max_logits, lb, reduction="none")
+              bce = 0.5 * bce_clip + 0.5 * bce_frame
+              ps = (bce * wt * mk).sum(1) / (mk.sum(1) + 1e-8)
+              cls_loss = (ps * sw).mean()
+  
+              if USE_PERCH_DISTILL and perch_teacher is not None:
+                  # ★ exp082 Perch distill: 4x 5s averaged for 20s alignment
+                  with torch.no_grad():
+                      wav_full = wav.squeeze(1)
+                      N = wav_full.shape[1]
+                      if N == 160000:
+                          # 5s legacy
+                          perch_emb = perch_teacher.embed(wav_full).to(device)
+                      elif N == 320000:
+                          # 10s: 2x 5s averaged
+                          emb_a = perch_teacher.embed(wav_full[:, :160000]).to(device)
+                          emb_b = perch_teacher.embed(wav_full[:, 160000:]).to(device)
+                          perch_emb = (emb_a + emb_b) * 0.5
+  ... (149 more lines)
+
+========= cell 12 id=drive_mirror (code, 15 lines) =========
+  # ============================================================
+  # Cell 12: Final Drive mirror — all per-epoch ckpts
+  # ============================================================
+  print("Mirroring all artifacts to Drive...")
+  n_copied = 0
+  for f in sorted(OUT_DIR.glob("*")):
+      if not f.is_file(): continue
+      if f.suffix not in {".pth", ".json", ".txt"}: continue
+      try:
+          shutil.copy2(str(f), str(DRIVE_OUTPUT_DIR / f.name))
+          n_copied += 1
+          print(f"  {f.name}  {f.stat().st_size/1e6:.1f} MB")
+      except Exception as e:
+          print(f"  [WARN] {f.name}: {e}")
+  print(f"\nMirrored {n_copied} files to {DRIVE_OUTPUT_DIR}")
+
+========= cell 13 id=summary (code, 20 lines) =========
+  # ============================================================
+  # Cell 13: Session summary (train phase)
+  # ============================================================
+  total_time = time.time() - TRAIN_START
+  print(f"\n{'='*60}")
+  print(f"R2 Train Session summary")
+  print(f"{'='*60}")
+  print(f"  Resume status:        {'RESUMED' if resumed else 'FRESH START'}")
+  print(f"  Resumed from epoch:   {start_epoch}")
+  print(f"  Trained this session: {trained_this_session} epoch(s)")
+  print(f"  Cumulative:           {trained_up_to}/{N_TOTAL_EPOCHS} epochs")
+  print(f"  Best ns22 AUC:        {best_ns22:.4f}")
+  print(f"  Best macro AUC:       {best_macro:.4f}")
+  print(f"  Total session time:   {total_time/60:.1f} min")
+  print(f"  Drive output:         {DRIVE_OUTPUT_DIR}")
+  if trained_up_to >= N_TOTAL_EPOCHS:
+      print(f"\n  >>> R2 Training COMPLETE — proceed to pseudo phase <<<")
+  else:
+      print(f"\n  ... R2 not yet complete; re-run NB to continue.")
+      print(f"  ... Skip pseudo/upload cells until training completes.")
+
+========= cell 14 id=pseudo_hdr (markdown, 4 lines) =========
+  ## ─────── R2 Pseudo Phase ───────
+  
+  R2 学生の best ckpt で全 train_soundscapes 推論 → R2 pseudo CSV を Drive に保存。
+  exp017 R3 等で使う想定。
+
+========= cell 15 id=pseudo_setup (code, 44 lines) =========
+  # ============================================================
+  # Cell 15: Pseudo setup — free VRAM, load best ckpt
+  # ============================================================
+  import glob
+  from scipy.ndimage import gaussian_filter1d
+  
+  # Post-processing config (R1 と同じ)
+  N_WINDOWS    = 3    # exp082: 60s / 20s = 3
+  CHUNK_N      = TRAIN_SAMPLES
+  GAUSS_SIGMA  = 0.65
+  POWER_GAMMA  = 1.2
+  
+  # Free VRAM from training
+  del optimizer, scheduler, scaler, mel_transform, spec_augment
+  if perch_teacher is not None:
+      del perch_teacher
+  del model
+  gc.collect()
+  torch.cuda.empty_cache()
+  
+  # Best ckpt path
+  CKPT_PATH = OUT_DIR / "ckpt_best_ns22.pth"
+  if not CKPT_PATH.exists():
+      CKPT_PATH = OUT_DIR / "ckpt_latest.pth"
+  assert CKPT_PATH.exists(), f"No ckpt at {OUT_DIR}"
+  print(f"Using ckpt: {CKPT_PATH}")
+  print(f"R2 pseudo dir: {DRIVE_R2_PSEUDO_DIR}")
+  
+  try:
+      state = torch.load(str(CKPT_PATH), map_location="cpu", weights_only=False)
+  except TypeError:
+      state = torch.load(str(CKPT_PATH), map_location="cpu")
+  
+  print(f"  epoch={state.get('epoch')}, "
+        f"best_ns22={state.get('best_ns22', float('nan')):.4f}, "
+        f"best_macro={state.get('best_macro', float('nan')):.4f}")
+  
+  model = BirdSEDModel().to(device)
+  model.load_state_dict(state["model_state"], strict=False)
+  model.eval()
+  model = model.to(memory_format=torch.channels_last)
+  print(f"OK model loaded ({sum(p.numel() for p in model.parameters())/1e6:.1f}M params)")
+  
+  mel_tf = MelSpecTransform().to(device)
+
+========= cell 16 id=pseudo_infer (code, 66 lines) =========
+  # ============================================================
+  # Cell 16: Pseudo R2 inference — all train_soundscapes
+  # ============================================================
+  import soundfile as sf
+  import librosa
+  from tqdm.auto import tqdm
+  
+  def load_audio_32k_mono(path, target_samples=60 * SR):
+      wav, sr = sf.read(str(path), dtype="float32", always_2d=False)
+      if wav.ndim > 1:
+          wav = wav.mean(axis=1)
+      if sr != SR:
+          wav = librosa.resample(wav, orig_sr=sr, target_sr=SR)
+      if len(wav) < target_samples:
+          wav = np.pad(wav, (0, target_samples - len(wav)))
+      elif len(wav) > target_samples:
+          wav = wav[:target_samples]
+      return wav.astype(np.float32)
+  
+  def file_to_chunks(path):
+      wav = load_audio_32k_mono(path, target_samples=N_WINDOWS * CHUNK_N)
+      return wav.reshape(N_WINDOWS, CHUNK_N).astype(np.float32)
+  
+  sc_files = sorted(glob.glob(str(TS_DIR / "*.ogg")))
+  print(f"train_soundscapes: {len(sc_files)} files")
+  assert len(sc_files) > 0
+  
+  all_filenames, all_start_secs, all_end_secs, all_probs = [], [], [], []
+  t0 = time.time()
+  
+  with torch.no_grad():
+      for fi, fpath in enumerate(tqdm(sc_files, desc="infer", mininterval=2.0)):
+          stem = Path(fpath).stem
+          try:
+              chunks = file_to_chunks(fpath)
+          except Exception as e:
+              print(f"WARN: {stem}: {e}")
+              chunks = np.zeros((N_WINDOWS, CHUNK_N), dtype=np.float32)
+  
+          wav_t = torch.from_numpy(chunks).unsqueeze(1).to(device)
+          mel = mel_tf(wav_t)
+          for i in range(mel.size(0)):
+              mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+          mel = mel.to(memory_format=torch.channels_last)
+  
+          with autocast():
+              clip_logits, framewise = model(mel, return_framewise=True)
+              frame_max = framewise.max(dim=1).values
+              p_clip = torch.sigmoid(clip_logits).float().cpu().numpy()
+              p_fmax = torch.sigmoid(frame_max).float().cpu().numpy()
+          probs_file = 0.5 * p_clip + 0.5 * p_fmax
+          probs_file = gaussian_filter1d(probs_file, sigma=GAUSS_SIGMA, axis=0,
+                                          mode="nearest").astype(np.float32)
+  
+          all_probs.append(probs_file)
+          for wi in range(N_WINDOWS):
+              all_filenames.append(stem)
+              all_start_secs.append(wi * TRAIN_DURATION)
+              all_end_secs.append((wi + 1) * TRAIN_DURATION)
+  
+  prob_mat = np.concatenate(all_probs, axis=0).astype(np.float32)
+  filenames_arr = np.array(all_filenames)
+  start_secs_arr = np.array(all_start_secs, dtype=np.float32)
+  end_secs_arr   = np.array(all_end_secs,   dtype=np.float32)
+  print(f"\nInference: {prob_mat.shape}, mean={prob_mat.mean():.4f}, max={prob_mat.max():.4f} "
+        f"in {(time.time()-t0)/60:.1f} min")
+
+========= cell 17 id=pseudo_save (code, 59 lines) =========
+  # ============================================================
+  # Cell 17: Pseudo R2 postproc + save CSV + Drive mirror
+  # ============================================================
+  print(f"Pre-PT: mean={prob_mat.mean():.6f}, max={prob_mat.max():.4f}, "
+        f"99%ile={np.percentile(prob_mat, 99):.4f}")
+  
+  prob_mat = np.power(prob_mat, POWER_GAMMA).astype(np.float32)
+  
+  print(f"Post-PT (γ={POWER_GAMMA}): mean={prob_mat.mean():.6f}, max={prob_mat.max():.4f}, "
+        f"99%ile={np.percentile(prob_mat, 99):.4f}, "
+        f"50%ile={np.percentile(prob_mat, 50):.4f}")
+  
+  row_max = prob_mat.max(axis=1)
+  print(f"row_max stats (diagnostic, NO filter): 50%ile={np.percentile(row_max,50):.4f}, "
+        f"99%ile={np.percentile(row_max,99):.4f}")
+  
+  df = pd.DataFrame(prob_mat, columns=PRIMARY_LABELS)
+  df.insert(0, "filename",  filenames_arr)
+  df.insert(1, "start_sec", start_secs_arr)
+  df.insert(2, "end_sec",   end_secs_arr)
+  
+  local_csv = OUT_DIR / "pseudo_labels.csv"
+  df.to_csv(local_csv, index=False)
+  print(f"\nLocal: {local_csv} ({local_csv.stat().st_size/1024/1024:.1f}MB)")
+  print(f"  shape: {df.shape}, files: {df['filename'].nunique()}")
+  
+  # Mirror to Drive
+  drive_csv = DRIVE_R2_PSEUDO_DIR / "pseudo_labels.csv"
+  sz = local_csv.stat().st_size
+  print(f"\nMirroring to Drive: {drive_csv} ({sz/1e6:.1f}MB)")
+  t0 = time.time()
+  with open(local_csv, "rb") as fin, open(drive_csv, "wb") as fout:
+      pbar = tqdm(total=sz, unit="B", unit_scale=True, unit_divisor=1024,
+                  desc="Drive mirror", mininterval=1.0)
+      while True:
+          buf = fin.read(8*1024*1024)
+          if not buf: break
+          fout.write(buf); pbar.update(len(buf))
+      pbar.close()
+  print(f"  done in {time.time()-t0:.0f}s")
+  
+  meta = {
+      "backbone": BACKBONE,
+      "round": "R2",
+      "ckpt": str(CKPT_PATH.name),
+      "epoch": state.get("epoch"),
+      "best_ns22": state.get("best_ns22"),
+      "best_macro": state.get("best_macro"),
+      "n_files": int(df["filename"].nunique()),
+      "n_rows": int(len(df)),
+      "gauss_sigma": GAUSS_SIGMA,
+      "power_gamma": POWER_GAMMA,
+  }
+  (DRIVE_R2_PSEUDO_DIR / "pseudo_meta.json").write_text(json.dumps(meta, indent=2, default=str))
+  print(f"  meta written: {DRIVE_R2_PSEUDO_DIR}/pseudo_meta.json")
+  
+  # Free pseudo memory before upload
+  del prob_mat, df, all_probs, all_filenames
+  gc.collect(); torch.cuda.empty_cache()
+
+========= cell 18 id=upload_state (code, 88 lines) =========
+  # ============================================================
+  # Cell 18: Upload R2 weights to Kaggle Dataset (version up existing slug)
+  # ============================================================
+  import tempfile
+  from kaggle.api.kaggle_api_extended import KaggleApi
+  
+  api = KaggleApi(); api.authenticate()
+  
+  USER  = "maekeso"
+  SLUG  = "birdclef2026-exp082-weights"
+  TITLE = "birdclef2026 exp017 weights"
+  
+  # R2 ckpts to upload (R2 best ns22 / macro / latest + history)
+  # 注: 同じ Dataset slug に R2 ckpt も追加する (version up)
+  TARGETS = [
+      ("ckpt_best_ns22.pth", "r2_ckpt_best_ns22.pth"),
+      ("ckpt_best_macro.pth", "r2_ckpt_best_macro.pth"),
+      ("ckpt_latest.pth", "r2_ckpt_latest.pth"),
+      ("history.json", "r2_history.json"),
+  ]
+  
+  with tempfile.TemporaryDirectory() as td:
+      td = Path(td)
+      n_copied = 0
+      for src_name, dst_name in TARGETS:
+          src = OUT_DIR / src_name
+          if not src.exists():
+              print(f"  skip (missing): {src_name}")
+              continue
+          shutil.copy2(str(src), str(td / dst_name))
+          n_copied += 1
+          print(f"  staged: {dst_name}  ({src.stat().st_size/1e6:.1f}MB)")
+  
+      # Pull existing R1 files from the previous Dataset version into the new version
+      # (otherwise Kaggle replaces — version up = full replacement)
+      print(f"\nFetching R1 files from existing Dataset version to preserve them...")
+      try:
+          tmp_dl = td / "_r1_existing"
+          tmp_dl.mkdir(exist_ok=True)
+          api.dataset_download_files(f"{USER}/{SLUG}", path=str(tmp_dl), unzip=True, quiet=False)
+          for f in tmp_dl.iterdir():
+              if f.is_file() and not f.name.startswith("r2_") and not (td / f.name).exists():
+                  shutil.copy2(str(f), str(td / f.name))
+                  print(f"  preserved R1: {f.name}")
+          shutil.rmtree(tmp_dl)
+      except Exception as e:
+          print(f"  [WARN] could not preserve R1 files: {str(e)[:200]}")
+          print(f"  R2 will be uploaded as a fresh version (R1 files may be replaced)")
+  
+      meta = {
+          "title": TITLE,
+          "id": f"{USER}/{SLUG}",
+          "licenses": [{"name": "CC0-1.0"}],
+      }
+      (td / "dataset-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+  
+      version_notes = f"R2 best_ns22={best_ns22:.4f} (R1 v2 was 0.9166)"
+      uploaded = False
+  
+      # Pre-check existence (Kaggle returns 403 not 404 for missing dataset)
+      try:
+          api.dataset_view(f"{USER}/{SLUG}")
+          dataset_exists = True
+          print(f"\nDataset {USER}/{SLUG} exists → create new VERSION")
+      except Exception:
+          dataset_exists = False
+          print(f"\nDataset {USER}/{SLUG} not found → CREATE new dataset")
+  
+      if dataset_exists:
+          try:
+              api.dataset_create_version(folder=str(td),
+                                          version_notes=version_notes,
+                                          dir_mode="zip", quiet=False)
+              print(f"\nOK Uploaded (new version) — {version_notes}")
+              uploaded = True
+          except Exception as e:
+              print(f"  dataset_create_version error: {str(e)[:400]}")
+      else:
+          try:
+              api.dataset_create_new(folder=str(td), public=False, dir_mode="zip", quiet=False)
+  ... (8 more lines)
+
+========= cell 19 id=terminate (code, 9 lines) =========
+  # ============================================================
+  # Cell 19: Terminate Colab runtime — save Pro+ compute units
+  # ============================================================
+  # ここまで完走したら Blackwell を即座に切る。Drive 出力済 + Kaggle Dataset push 済で残作業なし。
+  print("All R2 phases complete. Terminating Colab runtime in 5s to free compute units...")
+  import time as _t
+  _t.sleep(5)
+  from google.colab import runtime
+  runtime.unassign()
+
+========= cell 20 id=-nDI_HIApZwj (code, 67 lines) =========
+  # Colab で実行: kaggle.json setup + R2 重み upload
+  import os, json, shutil, tempfile
+  from pathlib import Path
+  
+  # === auth setup ===
+  DRIVE_INPUT = Path("/content/drive/MyDrive/kaggle/birdclef2026")
+  if not Path("/content/drive/MyDrive").exists():
+      from google.colab import drive
+      drive.mount("/content/drive", force_remount=False)
+  
+  KJ_CANDIDATES = [DRIVE_INPUT / "kaggle.json", Path("/content/drive/MyDrive/kaggle.json")]
+  KJ = next((p for p in KJ_CANDIDATES if p.exists()), None)
+  assert KJ is not None, f"kaggle.json not found in {[str(p) for p in KJ_CANDIDATES]}"
+  
+  KAGGLE_CFG = Path.home() / ".kaggle"
+  KAGGLE_CFG.mkdir(parents=True, exist_ok=True)
+  shutil.copy(str(KJ), str(KAGGLE_CFG / "kaggle.json"))
+  os.chmod(str(KAGGLE_CFG / "kaggle.json"), 0o600)
+  
+  # KGAT_ トークンを env var に (Bearer auth、Basic auth 401 回避)
+  creds = json.loads(KJ.read_text())
+  if creds.get("key", "").startswith("KGAT_"):
+      os.environ["KAGGLE_API_TOKEN"] = creds["key"]
+  print(f"kaggle.json: {KJ}")
+  
+  from kaggle.api.kaggle_api_extended import KaggleApi
+  api = KaggleApi(); api.authenticate()
+  print("Kaggle authenticated OK")
+  
+  # === upload R2 weights ===
+  DRIVE_R2 = DRIVE_INPUT / "output" / "exp017" / "r2"
+  USER, SLUG = "maekeso", "birdclef2026-exp017-weights"
+  
+  TARGETS = [
+      ("ckpt_best_ns22.pth",  "r2_ckpt_best_ns22.pth"),
+      ("ckpt_best_macro.pth", "r2_ckpt_best_macro.pth"),
+      ("ckpt_latest.pth",     "r2_ckpt_latest.pth"),
+      ("history.json",        "r2_history.json"),
+  ]
+  
+  with tempfile.TemporaryDirectory() as td:
+      td = Path(td)
+      # Stage R2 files (rename with r2_ prefix)
+      for src_name, dst_name in TARGETS:
+          src = DRIVE_R2 / src_name
+          if src.exists():
+              shutil.copy2(str(src), str(td / dst_name))
+              print(f"  staged: {dst_name} ({src.stat().st_size/1e6:.1f}MB)")
+          else:
+              print(f"  skip missing: {src_name}")
+      # Pull existing R1 files from previous version to preserve them
+      tmp_dl = td / "_r1_existing"; tmp_dl.mkdir()
+      api.dataset_download_files(f"{USER}/{SLUG}", path=str(tmp_dl), unzip=True, quiet=False)
+      for f in tmp_dl.iterdir():
+          if f.is_file() and not f.name.startswith("r2_") and not (td / f.name).exists():
+              shutil.copy2(str(f), str(td / f.name))
+              print(f"  preserved R1: {f.name}")
+      shutil.rmtree(tmp_dl)
+      # Metadata + upload
+      meta = {"title": "birdclef2026 exp017 weights",
+              "id": f"{USER}/{SLUG}",
+              "licenses": [{"name": "CC0-1.0"}]}
+      (td / "dataset-metadata.json").write_text(json.dumps(meta, indent=2))
+      api.dataset_create_version(folder=str(td),
+                                  version_notes="R2 manual upload (val 0.9249)",
+                                  dir_mode="zip", quiet=False)
+      print(f"\nOK uploaded. URL: https://www.kaggle.com/datasets/{USER}/{SLUG}")
+
+========= cell 21 id=NvV7PbEUpZbO (code, 0 lines) =========

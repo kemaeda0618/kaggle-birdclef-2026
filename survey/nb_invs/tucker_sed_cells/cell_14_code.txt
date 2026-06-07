@@ -1,0 +1,199 @@
+# =================================================================
+# S5 -- TRAINING
+# =================================================================
+
+def _load_val_waveforms(val_sc_df):
+    """Load validation waveforms (always 5s)."""
+    sc_file_meta = pd.read_csv(WAVEFORM_CACHE_DIR / "soundscape_file_meta.csv")
+    sc_file_dict = dict(zip(sc_file_meta["filename"], sc_file_meta["cache_file"]))
+    wavs = []
+    for _, row in val_sc_df.iterrows():
+        cf = sc_file_dict.get(row["filename"])
+        if cf is not None:
+            w = load_sc_waveform_from(WAVEFORM_CACHE_DIR, cf)
+            if w is not None:
+                chunk = extract_chunk_np(w, int(row["start_sec"]) * SR, VAL_SAMPLES)
+                wavs.append(torch.from_numpy(chunk.astype(np.float32)).unsqueeze(0))
+            else: wavs.append(torch.zeros(1, VAL_SAMPLES))
+        else: wavs.append(torch.zeros(1, VAL_SAMPLES))
+    return wavs
+
+def _predict_from_waveforms(model, mel_transform, wav_list, batch_size=64):
+    """Inference: mel -> model -> sigmoid. Distillation head is NOT used."""
+    model.eval()
+    preds_clip, preds_fmax, preds_blend = [], [], []
+    with torch.no_grad():
+        for s in range(0, len(wav_list), batch_size):
+            batch = torch.stack(wav_list[s:s+batch_size]).to(device)
+            mel = mel_transform(batch)
+            B = mel.size(0)
+            for i in range(B):
+                mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+            with autocast():
+                clip_logits, framewise = model(mel, return_framewise=True)
+                frame_max = framewise.max(dim=1).values
+                p_clip = torch.sigmoid(clip_logits).cpu().numpy()
+                p_fmax = torch.sigmoid(frame_max).cpu().numpy()
+                p_blend = 0.5 * p_clip + 0.5 * p_fmax
+            preds_clip.append(p_clip); preds_fmax.append(p_fmax); preds_blend.append(p_blend)
+    return {"clip": np.concatenate(preds_clip), "fmax": np.concatenate(preds_fmax),
+            "blend": np.concatenate(preds_blend)}
+
+def build_active_datasets(fold_k):
+    items = []
+    if USE_FOCAL:
+        fds = FocalDS(audio_cache_meta[audio_cache_meta["fold"] != fold_k],
+                      LABEL2IDX, secondary_lookup=focal_secondary_labels,
+                      sc_mixup_sources=sc_mixup_sources if USE_FOCAL_SC_MIXUP else None,
+                      fold_k=fold_k, aug=True)
+        items.append(("focal", fds, len(fds)))
+    if USE_LABELED_SC:
+        vm = sc_cache_meta["fold"].values == fold_k
+        sc_train_df = sc_cache_meta[~vm].reset_index(drop=True)
+        Y_tr = Y_SC[~vm]
+        sds = ScDS(Y_tr, sc_train_df, aug=True)
+        items.append(("sc", sds, len(sds)))
+    return items
+
+def train_fold(fold_k):
+    vm = sc_cache_meta["fold"].values == fold_k
+    Y_val = Y_SC[vm]
+    ns22_val = non_s22_mask_sc[vm]
+    val_sc_df = sc_cache_meta[vm].reset_index(drop=True)
+
+    active = build_active_datasets(fold_k)
+    names, datasets, sizes = zip(*active)
+    mds = ConcatDataset(list(datasets))
+    nst = max(100, int(sum(sizes) / BATCH))
+
+    print(f"  Streams: {dict(zip(names, sizes))}  steps/ep: {nst}")
+
+    m = make_model()
+    mel_transform = MelSpecTransform().to(device)
+    spec_augment = SpecAugment().to(device)
+    perch_teacher = PerchTeacher(PERCH_ONNX_PATH,
+                                  "cuda" if torch.cuda.is_available() else "cpu") \
+                    if USE_PERCH_DISTILL else None
+
+    opt = torch.optim.AdamW(m.parameters(), lr=LR, weight_decay=WD)
+    scaler = GradScaler()
+    warmup_steps = nst * WARMUP_EPOCHS
+    total_steps  = nst * EPOCHS
+    warmup_sched = torch.optim.lr_scheduler.LinearLR(opt, start_factor=1/25, end_factor=1.0,
+                                                      total_iters=warmup_steps)
+    cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps - warmup_steps,
+                                                               eta_min=1e-6)
+    sch = torch.optim.lr_scheduler.SequentialLR(opt, schedulers=[warmup_sched, cosine_sched],
+                                                 milestones=[warmup_steps])
+
+    history = {"ep": [], "train_loss": [], "cls_loss": [], "dist_loss": [],
+               "macro": [], "ns22_macro": [],
+               "ns22_Aves": [], "ns22_Amphibia": [], "ns22_Insecta": [], "ns22_Mammalia": [],
+               "val_preds": []}
+    best_ns22, best_state_ns22 = -1.0, None
+    best_macro, best_state_macro = -1.0, None
+    val_wavs = _load_val_waveforms(val_sc_df)
+
+    for ep in range(EPOCHS):
+        m.train()
+        smp = MixSamp(list(sizes), list(names), SHARES, BATCH, nst, seed=42 + ep)
+        tl = DataLoader(mds, batch_sampler=smp, collate_fn=collate_m,
+                        num_workers=0, pin_memory=True)
+        el, el_cls, el_dist, nb_count = 0.0, 0.0, 0.0, 0
+        t0 = time.time()
+
+        for wav, lb, wt, mk, sr in tl:
+            wav, lb, wt, mk = wav.to(device), lb.to(device), wt.to(device), mk.to(device)
+            sw = mk_sw(sr).to(device)
+
+            with torch.no_grad():
+                mel = mel_transform(wav)
+                B = mel.size(0)
+                for i in range(B):
+                    mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+                mel = spec_augment(mel)
+
+            with autocast():
+                if USE_PERCH_DISTILL:
+                    clip_logits, framewise, distill_emb = m(mel, return_framewise=True,
+                                                            return_distill=True)
+                else:
+                    clip_logits, framewise = m(mel, return_framewise=True)
+
+                frame_max_logits = framewise.max(dim=1).values
+
+                # Classification loss
+                bce_clip = F.binary_cross_entropy_with_logits(clip_logits, lb, reduction="none")
+                bce_frame = F.binary_cross_entropy_with_logits(frame_max_logits, lb, reduction="none")
+                bce = 0.5 * bce_clip + 0.5 * bce_frame
+                ps = (bce * wt * mk).sum(1) / (mk.sum(1) + 1e-8)
+                cls_loss = (ps * sw).mean()
+
+                # Distillation loss
+                if USE_PERCH_DISTILL and perch_teacher is not None:
+                    with torch.no_grad():
+                        wav_5s = wav.squeeze(1)
+                        N = wav_5s.shape[1]
+                        if N > 160000:
+                            start = (N - 160000) // 2
+                            wav_5s = wav_5s[:, start:start + 160000]
+                        elif N < 160000:
+                            wav_5s = F.pad(wav_5s, (0, 160000 - N))
+                        perch_emb = perch_teacher.embed(wav_5s).to(device)
+                    distill_loss = F.mse_loss(distill_emb, perch_emb)
+                    loss = cls_loss + ALPHA_DISTILL * distill_loss
+                else:
+                    distill_loss = torch.tensor(0.0)
+                    loss = cls_loss
+
+            opt.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0)
+            scaler.step(opt)
+            scaler.update()
+            sch.step()
+            el += loss.item(); el_cls += cls_loss.item()
+            el_dist += distill_loss.item(); nb_count += 1
+
+        # Validation
+        val_preds_dict = _predict_from_waveforms(m, mel_transform, val_wavs)
+        val_preds = val_preds_dict["blend"]
+        r = full_eval(Y_val, val_preds, ns22_val, TAXON_MASKS)
+        for mode in ["clip", "fmax", "blend"]:
+            r_mode = full_eval(Y_val, val_preds_dict[mode], ns22_val, TAXON_MASKS)
+            r[f"ns22_{mode}"] = r_mode["non_s22_macro"]
+
+        history["ep"].append(ep)
+        history["train_loss"].append(round(el / nb_count, 5))
+        history["cls_loss"].append(round(el_cls / nb_count, 5))
+        history["dist_loss"].append(round(el_dist / nb_count, 5))
+        history["macro"].append(r["macro_auc_all"])
+        history["ns22_macro"].append(r["non_s22_macro"])
+        for t in ["Aves", "Amphibia", "Insecta", "Mammalia"]:
+            history[f"ns22_{t}"].append(r[f"non_s22_{t}"])
+        history["val_preds"].append(val_preds.astype(np.float32))
+
+        tag_ns22 = ""; tag_macro = ""
+        if r["non_s22_macro"] > best_ns22:
+            best_ns22 = r["non_s22_macro"]
+            best_state_ns22 = {k: v.cpu().clone() for k, v in m.state_dict().items()}
+            tag_ns22 = " *ns22"
+        if r["macro_auc_all"] > best_macro:
+            best_macro = r["macro_auc_all"]
+            best_state_macro = {k: v.cpu().clone() for k, v in m.state_dict().items()}
+            tag_macro = " *macro"
+
+        dist_str = f" dist={el_dist/nb_count:.4f}" if USE_PERCH_DISTILL else ""
+        print(f"    Ep{ep:02d}: loss={el/nb_count:.4f} cls={el_cls/nb_count:.4f}{dist_str} "
+              f"lr={opt.param_groups[0]['lr']:.1e} | "
+              f"ns22: {r['ns22_blend']:.4f} | "
+              f"Av={r['non_s22_Aves']:.4f} Am={r['non_s22_Amphibia']:.4f} "
+              f"In={r['non_s22_Insecta']:.4f} Ma={r['non_s22_Mammalia']:.4f} "
+              f"[{time.time()-t0:.0f}s]{tag_ns22}{tag_macro}")
+
+    del perch_teacher, m, mel_transform, spec_augment
+    torch.cuda.empty_cache(); gc.collect()
+    return best_state_ns22, best_state_macro, history
+
+print("OK Training function ready")

@@ -1,0 +1,7 @@
+---
+
+## Inference
+
+Everything below runs at scoring time. It uses only the ONNX models exported above — no PyTorch, no torchaudio, no timm. Just `onnxruntime` + `librosa` + `numpy`.
+
+The mel spectrogram is computed with librosa to match the training pipeline: 128 mels, n_fft=2048, hop=512, fmin=20, fmax=16000, power-to-dB with top_db=80, per-instance normalization.

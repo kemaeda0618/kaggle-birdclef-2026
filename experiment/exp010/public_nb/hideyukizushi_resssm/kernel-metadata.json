@@ -1,0 +1,30 @@
+{
+  "id": "hideyukizushi/bird26-reproduce-perch-protossm-resssm-inf-train",
+  "id_no": 114154690,
+  "title": "Bird26|REPRODUCE|Perch+ProtoSSM+ResSSM|INF/TRAIN",
+  "code_file": "bird26-reproduce-perch-protossm-resssm-inf-train.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [],
+  "dataset_sources": [
+    "jaejohn/perch-meta",
+    "rishikeshjani/perch-onnx-for-birdclef-2026",
+    "hideyukizushi/sgkfk-202604041716"
+  ],
+  "kernel_sources": [
+    "ashok205/tf-wheels",
+    "hideyukizushi/bird26-reprod-perch-proto-residualssm-train-s7177"
+  ],
+  "competition_sources": [
+    "birdclef-2026"
+  ],
+  "model_sources": [
+    "google/bird-vocalization-classifier/TensorFlow2/perch_v2_cpu/1"
+  ],
+  "docker_image": "gcr.io/kaggle-images/python@sha256:221c8b519c4f2efa4e712ac0f2e85878a403ea4d523a2cedf8ebf60cf1136c45",
+  "machine_shape": "None"
+}

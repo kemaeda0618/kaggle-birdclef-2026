@@ -1,0 +1,367 @@
+
+
+========= cell id=eval =========
+# ============================================================
+# Cell 7: Eval — AUC + validation predictor
+# ============================================================
+def compute_macro_auc(y_true, y_pred, mask=None, class_mask=None):
+    if mask is not None:
+        y_true, y_pred = y_true[mask], y_pred[mask]
+    if class_mask is not None:
+        y_true, y_pred = y_true[:, class_mask], y_pred[:, class_mask]
+    aucs = []
+    for c in range(y_true.shape[1]):
+        col = y_true[:, c]
+        if col.sum() == 0 or col.sum() == len(col):
+            continue
+        try:
+            aucs.append(roc_auc_score(col, y_pred[:, c]))
+        except ValueError:
+            continue
+    return (np.mean(aucs) if aucs else float("nan")), len(aucs)
+
+
+def full_eval(y_true, y_pred, ns22_mask, taxon_masks):
+    r = {}
+    a, n = compute_macro_auc(y_true, y_pred)
+    r["macro_auc_all"] = round(float(a) if not np.isnan(a) else 0.0, 4)
+    r["n_all"] = n
+    a, n = compute_macro_auc(y_true, y_pred, mask=ns22_mask)
+    r["non_s22_macro"] = round(float(a) if not np.isnan(a) else 0.0, 4)
+    r["n_ns22"] = n
+    per_taxon = {}
+    for t, cm in taxon_masks.items():
+        a, n = compute_macro_auc(y_true, y_pred, mask=ns22_mask, class_mask=cm)
+        per_taxon[t] = round(float(a) if not np.isnan(a) else 0.0, 4)
+    r["per_taxon"] = per_taxon
+    return r
+
+
+def _load_val_waveforms(val_sc_df):
+    wavs = []
+    for _, row in val_sc_df.iterrows():
+        fn = str(row["filename"])
+        if not fn.endswith(".ogg"): fn = fn + ".ogg"
+        wav = _load_ogg(TS_DIR / fn, n_samples_target=VAL_SAMPLES,
+                         start_sec=float(row["start_sec"]))
+        if wav is None or len(wav) == 0:
+            wav = np.zeros(VAL_SAMPLES, dtype=np.float32)
+        if len(wav) < VAL_SAMPLES:
+            wav = np.pad(wav, (0, VAL_SAMPLES - len(wav)))
+        else:
+            wav = wav[:VAL_SAMPLES]
+        wavs.append(torch.from_numpy(wav.astype(np.float32)).unsqueeze(0))
+    return wavs
+
+
+def _predict_from_waveforms(model, mel_transform, wav_list, batch_size=64):
+    model.eval()
+    preds_clip, preds_fmax, preds_blend = [], [], []
+    with torch.no_grad():
+        for s in range(0, len(wav_list), batch_size):
+            batch = torch.stack(wav_list[s:s+batch_size]).to(device)
+            mel = mel_transform(batch)
+            B = mel.size(0)
+            for i in range(B):
+                mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+            mel = mel.to(memory_format=torch.channels_last)
+            with autocast():
+                clip_logits, framewise = model(mel, return_framewise=True)
+                frame_max = framewise.max(dim=1).values
+                p_clip = torch.sigmoid(clip_logits).float().cpu().numpy()
+                p_fmax = torch.sigmoid(frame_max).float().cpu().numpy()
+                p_blend = 0.5 * p_clip + 0.5 * p_fmax
+            preds_clip.append(p_clip); preds_fmax.append(p_fmax); preds_blend.append(p_blend)
+    return {"clip": np.concatenate(preds_clip),
+            "fmax": np.concatenate(preds_fmax),
+            "blend": np.concatenate(preds_blend)}
+
+print("OK eval helpers ready")
+
+# ============================================================
+# ★ M7-style helpers (per-species AUC, class stats, taxon str)
+# ============================================================
+def compute_per_species_auc(y_true, y_pred, class_mask=None):
+    """Return list of (class_idx, AUC) for non-saturated species."""
+    indices = range(y_true.shape[1]) if class_mask is None else class_mask
+    aucs = []
+    for c in indices:
+        col = y_true[:, c]
+        if col.sum() == 0 or col.sum() == len(col):
+            continue
+        try:
+            auc = roc_auc_score(col, y_pred[:, c])
+            aucs.append((int(c), float(auc)))
+        except ValueError:
+            continue
+    return aucs
+
+
+def macro_auc_from_list(aucs):
+    import numpy as _np_m7
+    return float(_np_m7.mean([a for _, a in aucs])) if len(aucs) > 0 else float("nan")
+
+
+def lowest_k_mean(aucs, k=22):
+    import numpy as _np_m7
+    if len(aucs) == 0:
+        return float("nan")
+    sorted_aucs = sorted([a for _, a in aucs])
+    k_eff = min(k, len(sorted_aucs))
+    return float(_np_m7.mean(sorted_aucs[:k_eff]))
+
+
+def class_stats_str(aucs):
+    import numpy as _np_m7
+    if len(aucs) == 0:
+        return "n=0 median=nan p25=nan p75=nan #>0.5=0 #>0.7=0 #>0.9=0 #perfect=0"
+    vals = _np_m7.array([a for _, a in aucs])
+    return (f"n={len(vals)} median={_np_m7.median(vals):.3f} "
+            f"p25={_np_m7.percentile(vals,25):.3f} p75={_np_m7.percentile(vals,75):.3f} "
+            f"#>0.5={int((vals>0.5).sum())} #>0.7={int((vals>0.7).sum())} "
+            f"#>0.9={int((vals>0.9).sum())} #perfect={int((vals>=1.0).sum())}")
+
+
+def taxon_str_m7(y_true, y_pred, taxon_masks):
+    import math as _math_m7
+    parts = []
+    for t in ["Insecta", "Reptilia", "Amphibia", "Mammalia", "Aves"]:
+        mask = taxon_masks.get(t, [])
+        if len(mask) == 0:
+            parts.append(f"{t}=nan")
+            continue
+        aucs = compute_per_species_auc(y_true, y_pred, class_mask=list(mask))
+        m = macro_auc_from_list(aucs)
+        parts.append(f"{t}={m:.3f}" if not _math_m7.isnan(m) else f"{t}=nan")
+    return "taxon: " + " ".join(parts)
+
+print("OK M7 helpers ready (compute_per_species_auc, class_stats_str, taxon_str_m7)")
+
+
+
+========= cell id=train_loop =========
+# ============================================================
+# Cell 11: Training loop — Drive mirror per epoch
+# ============================================================
+mel_transform = MelSpecTransform().to(device)
+spec_augment = SpecAugment().to(device)
+perch_teacher = PerchTeacher(PERCH_PATH, "cuda" if torch.cuda.is_available() else "cpu") \
+                if USE_PERCH_DISTILL else None
+
+def mirror_to_drive(local_path: Path, dst_name: str = None):
+    '''Copy a single file from /content/output to DRIVE_OUTPUT_DIR. Best-effort.'''
+    try:
+        name = dst_name or local_path.name
+        shutil.copy2(str(local_path), str(DRIVE_OUTPUT_DIR / name))
+    except Exception as e:
+        print(f"  [WARN] mirror_to_drive failed for {local_path.name}: {e}")
+
+epoch_times = []
+trained_this_session = 0
+ep = start_epoch
+
+for epoch in range(start_epoch, N_TOTAL_EPOCHS):
+    elapsed = time.time() - TRAIN_START
+    if epoch_times:
+        est_next = max(epoch_times[-3:])
+        if elapsed + est_next * 1.3 > MAX_RUNTIME_SEC:
+            print(f"\n[stop] Time budget exhausted before epoch {epoch+1}/{N_TOTAL_EPOCHS}")
+            break
+
+    ep_start = time.time()
+    model.train()
+
+    smp = MixSamp(SIZES, NAMES, SHARES, BATCH, N_STEPS_PER_EP, seed=42 + epoch)
+    train_loader = DataLoader(
+        mds, batch_sampler=smp, collate_fn=collate_m,
+        num_workers=NUM_WORKERS,
+        persistent_workers=PERSISTENT_WORKERS if NUM_WORKERS > 0 else False,
+        pin_memory=True, prefetch_factor=4 if NUM_WORKERS > 0 else None,
+    )
+
+    el, el_cls, el_dist, nb_count = 0.0, 0.0, 0.0, 0
+    for batch_idx, (wav, lb, wt, mk, sr) in enumerate(train_loader):
+        wav, lb, wt, mk = wav.to(device, non_blocking=True), lb.to(device, non_blocking=True), \
+                          wt.to(device, non_blocking=True), mk.to(device, non_blocking=True)
+        sw = mk_sw(sr).to(device, non_blocking=True)
+
+        with torch.no_grad():
+            mel = mel_transform(wav)
+            B = mel.size(0)
+            for i in range(B):
+                mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+            mel = spec_augment(mel)
+            mel = mel.to(memory_format=torch.channels_last)
+
+        with autocast():
+            if USE_PERCH_DISTILL:
+                clip_logits, framewise, distill_emb = model(mel, return_framewise=True,
+                                                              return_distill=True)
+            else:
+                clip_logits, framewise = model(mel, return_framewise=True)
+
+            frame_max_logits = framewise.max(dim=1).values
+            bce_clip = F.binary_cross_entropy_with_logits(clip_logits, lb, reduction="none")
+            bce_frame = F.binary_cross_entropy_with_logits(frame_max_logits, lb, reduction="none")
+            bce = 0.5 * bce_clip + 0.5 * bce_frame
+            ps = (bce * wt * mk).sum(1) / (mk.sum(1) + 1e-8)
+            cls_loss = (ps * sw).mean()
+
+            if USE_PERCH_DISTILL and perch_teacher is not None:
+                # ★ exp081 Perch distill: 2x 5s averaged for 10s alignment
+                with torch.no_grad():
+                    wav_full = wav.squeeze(1)
+                    N = wav_full.shape[1]
+                    if N == 160000:
+                        # 5s legacy path
+                        perch_emb = perch_teacher.embed(wav_full).to(device)
+                    elif N == 320000:
+                        # 10s: 2x 5s Perch -> average (better alignment than center-5s)
+                        wav_a = wav_full[:, :160000]
+                        wav_b = wav_full[:, 160000:]
+                        emb_a = perch_teacher.embed(wav_a).to(device)
+                        emb_b = perch_teacher.embed(wav_b).to(device)
+                        perch_emb = (emb_a + emb_b) * 0.5
+                    elif N > 160000:
+                        start_off = (N - 160000) // 2
+                        perch_emb = perch_teacher.embed(wav_full[:, start_off:start_off + 160000]).to(device)
+                    else:
+                        wav_pad = F.pad(wav_full, (0, 160000 - N))
+                        perch_emb = perch_teacher.embed(wav_pad).to(device)
+                distill_loss = F.mse_loss(distill_emb, perch_emb)
+                loss = cls_loss + ALPHA_DISTILL * distill_loss
+            else:
+                distill_loss = torch.tensor(0.0, device=device)
+                loss = cls_loss
+
+        optimizer.zero_grad(set_to_none=True)
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        scheduler.step()
+
+        el += float(loss.item())
+        el_cls += float(cls_loss.item())
+        el_dist += float(distill_loss.item())
+        nb_count += 1
+
+        if batch_idx % 20 == 0:
+            cur_lr = optimizer.param_groups[0]["lr"]
+            print(f"    ep{epoch+1:02d} batch {batch_idx:4d}/{N_STEPS_PER_EP}  "
+                  f"loss={loss.item():.4f}  cls={cls_loss.item():.4f}  "
+                  f"dist={distill_loss.item():.4f}  lr={cur_lr:.2e}", flush=True)
+
+    train_loss_avg = el / max(nb_count, 1)
+    cls_loss_avg = el_cls / max(nb_count, 1)
+    dist_loss_avg = el_dist / max(nb_count, 1)
+
+    if len(val_wavs) > 0:
+        val_preds_dict = _predict_from_waveforms(model, mel_transform, val_wavs)
+        val_preds = val_preds_dict["blend"]
+        r = full_eval(Y_val, val_preds, ns22_val, TAXON_MASKS)
+        val_metrics = {
+            "ns22": r["non_s22_macro"],
+            "macro": r["macro_auc_all"],
+            "per_taxon": r["per_taxon"],
+        }
+    else:
+        val_metrics = {"ns22": float("nan"), "macro": float("nan"), "per_taxon": {}}
+
+    ep_elapsed = time.time() - ep_start
+    epoch_times.append(ep_elapsed)
+    trained_this_session += 1
+    ep = epoch + 1
+
+    state_to_save = {
+        "epoch": ep,
+        "fold": FOLD_K,
+        "n_total_epochs": N_TOTAL_EPOCHS,
+        "model_state": {k: v.cpu() for k, v in model.state_dict().items()},
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "scaler_state": scaler.state_dict(),
+        "best_ns22": best_ns22,
+        "best_macro": best_macro,
+        "history": history,
+    }
+    torch.save(state_to_save, OUT_DIR / "ckpt_latest.pth")
+    torch.save(state_to_save, OUT_DIR / f"ckpt_ep{ep:02d}.pth")
+
+    is_best_ns22 = (not math.isnan(val_metrics["ns22"])) and val_metrics["ns22"] > best_ns22
+    is_best_macro = (not math.isnan(val_metrics["macro"])) and val_metrics["macro"] > best_macro
+    if is_best_ns22:
+        best_ns22 = val_metrics["ns22"]
+        state_to_save["best_ns22"] = best_ns22
+        torch.save(state_to_save, OUT_DIR / "ckpt_best_ns22.pth")
+    if is_best_macro:
+        best_macro = val_metrics["macro"]
+        state_to_save["best_macro"] = best_macro
+        torch.save(state_to_save, OUT_DIR / "ckpt_best_macro.pth")
+
+    cur_lr = optimizer.param_groups[0]["lr"]
+    history.append({
+        "epoch": ep,
+        "train_loss": round(train_loss_avg, 5),
+        "cls_loss": round(cls_loss_avg, 5),
+        "dist_loss": round(dist_loss_avg, 5),
+        "val_ns22": val_metrics["ns22"],
+        "val_macro": val_metrics["macro"],
+        "val_per_taxon": val_metrics["per_taxon"],
+        "lr": cur_lr,
+        "elapsed_sec": round(ep_elapsed, 1),
+    })
+    with open(OUT_DIR / "history.json", "w") as f:
+        json.dump(history, f, indent=2, default=str)
+
+    mirror_to_drive(OUT_DIR / "ckpt_latest.pth")
+    mirror_to_drive(OUT_DIR / "history.json")
+    if is_best_ns22:
+        mirror_to_drive(OUT_DIR / "ckpt_best_ns22.pth")
+    if is_best_macro:
+        mirror_to_drive(OUT_DIR / "ckpt_best_macro.pth")
+
+    total_elapsed = time.time() - TRAIN_START
+    # ★ M7-style log: epoch summary + taxon line + class stats + BEST tag
+    cur_lr_log = optimizer.param_groups[0]["lr"]
+    best_tag = ""
+    if is_best_ns22 and is_best_macro:
+        best_tag = "BEST(ns22+macro) "
+    elif is_best_ns22:
+        best_tag = "BEST(ns22) "
+    elif is_best_macro:
+        best_tag = "BEST(macro) "
+
+    # Per-species AUC for class stats + taxon line (use ns22 mask = non-S22 evaluation set)
+    try:
+        _val_pred_blend_m7 = val_preds  # already computed above
+        _val_true_m7 = Y_val
+        if ns22_val is not None and ns22_val.any():
+            _val_true_m7_ns22 = _val_true_m7[ns22_val]
+            _val_pred_m7_ns22 = _val_pred_blend_m7[ns22_val]
+        else:
+            _val_true_m7_ns22 = _val_true_m7
+            _val_pred_m7_ns22 = _val_pred_blend_m7
+        _per_sp_aucs_m7 = compute_per_species_auc(_val_true_m7_ns22, _val_pred_m7_ns22)
+        _cls_line_m7 = class_stats_str(_per_sp_aucs_m7)
+        _tax_line_m7 = taxon_str_m7(_val_true_m7_ns22, _val_pred_m7_ns22, TAXON_MASKS)
+    except Exception as _e_m7:
+        _cls_line_m7 = f"(class stats err: {str(_e_m7)[:80]})"
+        _tax_line_m7 = f"(taxon err: {str(_e_m7)[:80]})"
+
+    print(f"\n=== Ep {ep}/{N_TOTAL_EPOCHS}: "
+          f"loss={train_loss_avg:.4f} (cls={cls_loss_avg:.4f} dist={dist_loss_avg:.4f}) "
+          f"val_ns22={val_metrics['ns22']:.4f} val_macro={val_metrics['macro']:.4f} "
+          f"{best_tag}lr={cur_lr_log:.2e} "
+          f"({ep_elapsed:.0f}s, total {total_elapsed/60:.1f}min) ===")
+    print(f"    {_tax_line_m7}")
+    print(f"    class: {_cls_line_m7}\n")
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+trained_up_to = ep
+print(f"\n=== Session done: trained epochs {start_epoch+1}-{trained_up_to} this session ===")
+print(f"    Cumulative: {trained_up_to}/{N_TOTAL_EPOCHS} epochs done")
+

@@ -1,0 +1,18 @@
+## S5 — Training Loop
+
+### Training recipe
+
+Each epoch:
+1. Sample batches with 90% focal / 10% soundscape composition
+2. Compute mel spectrogram on GPU + apply SpecAugment
+3. Forward pass: backbone produces features for both the distillation head and SED head (on detached features)
+4. Loss = BCE_classification + α × MSE_distillation
+5. Validate on held-out soundscape windows using clip+frame blend
+
+### Perch distillation mechanics
+
+For each batch, the frozen Perch ONNX model processes the same 5-second waveforms to produce target embeddings. The student’s distillation head projects GAP’d backbone features to 1536-d and is trained to match Perch via MSE. Since Perch trained on 14,795 species with millions of hours, this distillation teaches the small EfficientNet-B0 backbone to produce rich, generalizable audio representations.
+
+### Learning rate schedule
+
+Linear warmup over 2 epochs, then cosine decay to 1e-6. Gradient clipping at norm 1.0.

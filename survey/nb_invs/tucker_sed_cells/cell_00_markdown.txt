@@ -1,0 +1,29 @@
+# BirdCLEF 2026 — Distilled SED: Train + Inference
+
+**Architecture:** EfficientNet-B0 backbone + SED attention head + frozen Perch v2 embedding distillation  
+**Key idea:** The backbone learns to reproduce Perch’s 1536-d embeddings via MSE (the distillation branch). The SED classification head trains on stop-gradiented backbone features, so it never fights the distillation gradient. At inference, only the SED head is used — the distillation head is thrown away.  
+**Loss:** BCE (0.5 × clip + 0.5 × frame-max) + α · MSE(student_emb, perch_emb)  
+**Training data:** train_audio (focal recordings) + labeled train_soundscapes  
+**Reference:** Built from Hengck discussion [here](https://www.kaggle.com/competitions/birdclef-2026/discussion/685318#3430354) 0.898 with distillation vs 0.876 without (HGNet-B0)
+
+---
+
+### How this notebook works
+
+1. **Train** an EfficientNet-B0 SED model with Perch distillation (5-fold, ~25 epochs per fold)
+2. **Export** each fold’s best checkpoint to ONNX
+3. **Infer** on test soundscapes using the ONNX models (no PyTorch needed at scoring time)
+
+### Required Kaggle datasets
+
+| Dataset | Contents | Notes |
+|---|---|---|
+| `birdclef-2026` | Competition data (train_audio, train_soundscapes, CSVs) | Auto-attached |
+| `bc2026-waveform-cache` | Pre-extracted waveform cache (`.pt` int16 tensors) | Attach as input |
+| `perch-v2-no-dft-onnx` | `perch_v2_no_dft.onnx` + onnxruntime wheel | Attach as input |
+
+The waveform cache contains pre-sliced focal recordings and soundscape windows as int16 PyTorch tensors, along with metadata CSVs. This avoids decoding thousands of ogg files during training.
+
+### Versions
+
+V2: Cleaned up some comments and small bugs. Added Gaussian smooth as simple post processing step. 

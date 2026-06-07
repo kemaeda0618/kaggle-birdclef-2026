@@ -1,0 +1,319 @@
+# ============================================================
+# Cell 8: train_r2 function
+# ============================================================
+# ★ exp102: EMA (Exponential Moving Average) weight averaging
+class ModelEMA:
+    def __init__(self, model, decay=0.999):
+        self.decay = decay
+        self.shadow = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
+        self.shadow_buf = {n: b.detach().clone() for n, b in model.named_buffers()}
+    @torch.no_grad()
+    def update(self, model):
+        for n, p in model.named_parameters():
+            if p.requires_grad and n in self.shadow:
+                self.shadow[n].mul_(self.decay).add_(p.detach(), alpha=1.0 - self.decay)
+        for n, b in model.named_buffers():
+            if n in self.shadow_buf and b.dtype.is_floating_point:
+                self.shadow_buf[n].mul_(self.decay).add_(b.detach(), alpha=1.0 - self.decay)
+    @torch.no_grad()
+    def apply_to(self, model):
+        backup_p = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
+        backup_b = {n: b.detach().clone() for n, b in model.named_buffers()}
+        for n, p in model.named_parameters():
+            if p.requires_grad and n in self.shadow:
+                p.data.copy_(self.shadow[n])
+        for n, b in model.named_buffers():
+            if n in self.shadow_buf:
+                b.data.copy_(self.shadow_buf[n].to(b.dtype))
+        return backup_p, backup_b
+    @torch.no_grad()
+    def restore(self, model, backup_p, backup_b):
+        for n, p in model.named_parameters():
+            if n in backup_p:
+                p.data.copy_(backup_p[n])
+        for n, b in model.named_buffers():
+            if n in backup_b:
+                b.data.copy_(backup_b[n])
+
+print("OK ModelEMA class defined")
+
+
+
+
+def train_r2(fold_k, pseudo_meta_df, Y_pseudo, out_dir):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n{'='*60}\n[Fold {fold_k} R2] train ({N_TOTAL_EPOCHS} ep)\n{'='*60}")
+
+    items = []
+    fds_df = train_df[train_df["fold"] != fold_k].reset_index(drop=True)
+    fds = FocalDS(fds_df,
+                  LABEL2IDX, secondary_lookup=focal_secondary_labels, aug=True)
+    items.append(("focal", fds, len(fds)))
+
+    # ★ exp102: per-class inverse-freq weights for focal WRS
+    _cls_counts = fds_df["primary_label"].astype(str).value_counts().to_dict()
+    _focal_weights = np.array([
+        1.0 / max(_cls_counts.get(str(lbl), 1), 1)
+        for lbl in fds_df["primary_label"].astype(str).values
+    ], dtype=np.float64)
+    # Stats for log
+    print(f"  [WRS] focal n_classes={len(_cls_counts)}, "
+          f"min_count={min(_cls_counts.values())}, max_count={max(_cls_counts.values())}")
+    if len(sc_meta) > 0:
+        vm = sc_meta["fold"].values == fold_k
+        sc_train_df = sc_meta[~vm].reset_index(drop=True)
+        Y_tr = Y_SC[~vm]
+        sds = LabeledSCDS(Y_tr, sc_train_df, aug=True)
+        items.append(("labeled_sc", sds, len(sds)))
+    pds = PseudoScDS(pseudo_meta_df, Y_pseudo, TS_DIR, aug=True)
+    items.append(("pseudo_sc", pds, len(pds)))
+
+    NAMES, DATASETS, SIZES = zip(*items)
+    NAMES, DATASETS, SIZES = list(NAMES), list(DATASETS), list(SIZES)
+    print(f"  Streams: {dict(zip(NAMES, SIZES))}")
+
+    mds = ConcatDataset(DATASETS)
+    n_steps_ep = max(100, int(sum(SIZES) / BATCH))
+    print(f"  steps/epoch: {n_steps_ep}")
+
+    model = make_model()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WD)
+    ema = ModelEMA(model, decay=EMA_DECAY) if USE_EMA else None  # ★ exp102: EMA init
+    scaler = GradScaler()
+    warmup_steps = n_steps_ep * WARMUP_EPOCHS
+    total_steps  = n_steps_ep * N_TOTAL_EPOCHS
+    warmup_sched = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1/25, end_factor=1.0, total_iters=warmup_steps)
+    cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_steps - warmup_steps, eta_min=MIN_LR)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_steps])
+
+    if len(sc_meta) > 0:
+        vm = sc_meta["fold"].values == fold_k
+        val_sc_df = sc_meta[vm].reset_index(drop=True)
+        Y_val = Y_SC[vm]
+        ns22_val = non_s22_mask_sc[vm]
+        val_wavs = _load_val_waveforms(val_sc_df)
+    else:
+        val_wavs = []
+        Y_val = np.zeros((0, NUM_CLASSES), dtype=np.float32)
+        ns22_val = np.zeros(0, dtype=bool)
+
+    mel_transform = MelSpecTransform().to(device)
+    spec_augment = SpecAugment().to(device)
+
+    best_ns22 = -1.0
+    best_macro = -1.0
+    no_improve_count = 0          # ★ exp102 v3: early stop counter
+    history = []
+    epoch_times = []
+
+    for epoch in range(N_TOTAL_EPOCHS):
+        elapsed = time.time() - SESSION_START
+        if epoch_times:
+            est_next = max(epoch_times[-3:])
+            if elapsed + est_next * 1.3 > MAX_RUNTIME_SEC:
+                print(f"  [stop] time budget"); break
+        ep_start = time.time()
+        model.train()
+
+        # ★ exp102: WRS warm-up — uniform -> inv-freq gradient (ep 1 uniform, ep WRS_WARMUP_EPOCHS+ pure inv-freq)
+        _wrs_alpha = min(1.0, (epoch + 1) / max(WRS_WARMUP_EPOCHS, 1))
+        _focal_uniform = np.full(len(_focal_weights), 1.0 / len(_focal_weights), dtype=np.float64)
+        _focal_effective = (1.0 - _wrs_alpha) * _focal_uniform + _wrs_alpha * _focal_weights
+        _focal_effective = _focal_effective / _focal_effective.sum()
+        if epoch < WRS_WARMUP_EPOCHS:
+            print(f"  [WRS warm-up] ep {epoch+1}: alpha={_wrs_alpha:.2f}, max/min ratio={_focal_effective.max()/max(_focal_effective.min(),1e-12):.1f}")
+        smp = MixSamp(SIZES, NAMES, SHARES_R2, BATCH, n_steps_ep, seed=42 + epoch, focal_weights=_focal_effective)
+        train_loader = DataLoader(
+            mds, batch_sampler=smp, collate_fn=collate_m,
+            num_workers=NUM_WORKERS,
+            persistent_workers=PERSISTENT_WORKERS if NUM_WORKERS > 0 else False,
+            pin_memory=True,
+            prefetch_factor=4 if NUM_WORKERS > 0 else None,
+        )
+
+        el, el_cls, el_dist, nb_count = 0.0, 0.0, 0.0, 0
+        for batch_idx, (wav, lb, perch_emb, wt, mk, sr) in enumerate(train_loader):
+            wav = wav.to(device, non_blocking=True)
+            lb = lb.to(device, non_blocking=True)
+            perch_emb = perch_emb.to(device, non_blocking=True)
+            wt = wt.to(device, non_blocking=True)
+            mk = mk.to(device, non_blocking=True)
+            sw = mk_sw(sr).to(device, non_blocking=True)
+
+            with torch.no_grad():
+                mel = mel_transform(wav)
+                B = mel.size(0)
+                for i in range(B):
+                    mel[i] = (mel[i] - mel[i].mean()) / (mel[i].std() + 1e-6)
+                mel = spec_augment(mel)
+                mel = mel.to(memory_format=torch.channels_last)
+
+            with autocast():
+                clip_logits, framewise, distill_emb = model(
+                    mel, return_framewise=True, return_distill=True)
+                frame_max_logits = framewise.max(dim=1).values
+                bce_clip = F.binary_cross_entropy_with_logits(clip_logits, lb, reduction="none")
+                bce_frame = F.binary_cross_entropy_with_logits(frame_max_logits, lb, reduction="none")
+                bce = 0.5 * bce_clip + 0.5 * bce_frame
+                ps = (bce * wt * mk).sum(1) / (mk.sum(1) + 1e-8)
+                cls_loss = (ps * sw).mean()
+                distill_loss = F.mse_loss(distill_emb, perch_emb)
+                loss = cls_loss + ALPHA_DISTILL * distill_loss
+
+            optimizer.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            if ema is not None:
+                ema.update(model)  # ★ exp102: EMA update
+
+            el += float(loss.item())
+            el_cls += float(cls_loss.item())
+            el_dist += float(distill_loss.item())
+            nb_count += 1
+
+            if batch_idx % 50 == 0:
+                cur_lr = optimizer.param_groups[0]["lr"]
+                print(f"    ep{epoch+1:02d} batch {batch_idx:4d}/{n_steps_ep}  "
+                      f"loss={loss.item():.4f} cls={cls_loss.item():.4f} "
+                      f"dist={distill_loss.item():.4f} lr={cur_lr:.2e}", flush=True)
+
+        train_loss_avg = el / max(nb_count, 1)
+        cls_loss_avg = el_cls / max(nb_count, 1)
+        dist_loss_avg = el_dist / max(nb_count, 1)
+
+        # ★ exp102: val eval (regular + EMA) with M7-style logging
+        val_ns22 = val_macro = float("nan")
+        val_ns22_ema = val_macro_ema = float("nan")
+        per_species = []
+        tax_line = "taxon: (n/a)"
+        cls_line = "n=0"
+        best_source = "reg"  # "reg" | "ema"
+
+        if len(val_wavs) > 0:
+            val_preds = _predict_from_waveforms(model, mel_transform, val_wavs)
+            r = full_eval(Y_val, val_preds, ns22_val, TAXON_MASKS)
+            val_ns22 = r["non_s22_macro"]; val_macro = r["macro_auc_all"]
+            per_species = compute_per_species_auc(Y_val, val_preds, mask=ns22_val)
+            tax_line = taxon_str(Y_val, val_preds, ns22_val, TAXON_MASKS)
+            cls_line = class_stats_str(per_species)
+
+        # EMA eval
+        if ema is not None and len(val_wavs) > 0:
+            _bp, _bb = ema.apply_to(model)
+            try:
+                val_preds_ema = _predict_from_waveforms(model, mel_transform, val_wavs)
+                r_ema = full_eval(Y_val, val_preds_ema, ns22_val, TAXON_MASKS)
+                val_ns22_ema = r_ema["non_s22_macro"]; val_macro_ema = r_ema["macro_auc_all"]
+                per_species_ema = compute_per_species_auc(Y_val, val_preds_ema, mask=ns22_val)
+                tax_line_ema = taxon_str(Y_val, val_preds_ema, ns22_val, TAXON_MASKS)
+                cls_line_ema = class_stats_str(per_species_ema)
+            finally:
+                ema.restore(model, _bp, _bb); del _bp, _bb
+
+        ep_elapsed = time.time() - ep_start
+        epoch_times.append(ep_elapsed)
+        ep = epoch + 1
+
+        # Decide best ns22 source between regular and EMA
+        cand_ns22 = val_ns22
+        cand_source = "reg"
+        if not math.isnan(val_ns22_ema) and (math.isnan(cand_ns22) or val_ns22_ema > cand_ns22):
+            cand_ns22 = val_ns22_ema; cand_source = "ema"
+
+        is_best_ns22 = (not math.isnan(cand_ns22)) and (cand_ns22 > best_ns22)
+        is_best_macro = (not math.isnan(val_macro)) and (val_macro > best_macro)
+
+        state_to_save = {
+            "epoch": ep, "fold": fold_k, "round": "r2",
+            "n_total_epochs": N_TOTAL_EPOCHS,
+            "model_state": {k: v.cpu() for k, v in model.state_dict().items()},
+            "best_ns22": best_ns22, "best_macro": best_macro,
+        }
+        torch.save(state_to_save, out_dir / "ckpt_latest.pth")
+
+        # Save best ckpt — use EMA weights if EMA score better
+        if is_best_ns22:
+            best_ns22 = cand_ns22
+            best_source = cand_source
+            if best_source == "ema":
+                _bp, _bb = ema.apply_to(model)
+                ema_state = {"epoch": ep, "fold": fold_k, "round": "r2",
+                             "best_ns22": best_ns22, "best_macro": val_macro_ema,
+                             "model_state": {k: v.cpu() for k, v in model.state_dict().items()},
+                             "ema": True}
+                torch.save(ema_state, out_dir / "ckpt_best_ns22.pth")
+                ema.restore(model, _bp, _bb); del _bp, _bb
+            else:
+                state_to_save["best_ns22"] = best_ns22
+                torch.save(state_to_save, out_dir / "ckpt_best_ns22.pth")
+
+        if is_best_macro:
+            best_macro = val_macro
+            state_to_save["best_macro"] = best_macro
+            torch.save(state_to_save, out_dir / "ckpt_best_macro.pth")
+
+        history.append({"epoch": ep, "train_loss": round(train_loss_avg, 5),
+                        "cls_loss": round(cls_loss_avg, 5),
+                        "dist_loss": round(dist_loss_avg, 5),
+                        "val_ns22": val_ns22, "val_macro": val_macro,
+                        "val_ns22_ema": val_ns22_ema, "val_macro_ema": val_macro_ema,
+                        "best_ns22": best_ns22, "best_source": best_source,
+                        "lr": optimizer.param_groups[0]["lr"],
+                        "elapsed_sec": round(ep_elapsed, 1)})
+        with open(out_dir / "history.json", "w") as f:
+            json.dump(history, f, indent=2, default=str)
+
+        total_elapsed = time.time() - SESSION_START
+        best_tag = "BEST " if is_best_ns22 else ""
+        cur_lr = optimizer.param_groups[0]["lr"]
+
+        # === M7-style epoch summary ===
+        print(f"\n  === Ep {ep}/{N_TOTAL_EPOCHS}: loss={train_loss_avg:.4f} "
+              f"(cls={cls_loss_avg:.4f} dist={dist_loss_avg:.4f}) "
+              f"val_ns22={val_ns22:.4f} val_macro={val_macro:.4f} "
+              f"{best_tag}lr={cur_lr:.2e} ({ep_elapsed:.0f}s, session {total_elapsed/60:.1f}min) ===")
+        if not math.isnan(val_ns22_ema):
+            ema_best_tag = "BEST " if (is_best_ns22 and best_source == "ema") else ""
+            print(f"    EMA  val_ns22={val_ns22_ema:.4f} val_macro={val_macro_ema:.4f} {ema_best_tag}")
+        print(f"    {tax_line}")
+        print(f"    class: {cls_line}")
+        if not math.isnan(val_ns22_ema):
+            print(f"    EMA  {tax_line_ema}")
+            print(f"    EMA class: {cls_line_ema}")
+        if is_best_ns22:
+            print(f"    [BEST] ns22 updated to {best_ns22:.4f} (source: {best_source})")
+
+        # ★ exp102 v3: Early stopping check
+        # - Reset counter on improvement (regular OR EMA, captured by is_best_ns22)
+        # - Skip update if val unavailable (NaN), to prevent false-triggers
+        # - Never stop before MIN_EPOCH_BEFORE_STOP (Babych late jump 保護)
+        # - Stop only when no_improve_count >= EARLY_STOP_PATIENCE
+        if not math.isnan(cand_ns22):
+            if is_best_ns22:
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
+            print(f"    [es] no_improve={no_improve_count}/{EARLY_STOP_PATIENCE} (min_ep_to_stop={MIN_EPOCH_BEFORE_STOP})")
+            if (epoch + 1) >= MIN_EPOCH_BEFORE_STOP and no_improve_count >= EARLY_STOP_PATIENCE:
+                print(f"\n  [EARLY STOP] ep {epoch+1}: no improvement for {no_improve_count} epochs "
+                      f"(patience={EARLY_STOP_PATIENCE}, min_ep={MIN_EPOCH_BEFORE_STOP}) — abort fold {fold_k}, keep best ckpt\n")
+                gc.collect()
+                torch.cuda.empty_cache()
+                break
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    print(f"  [R2 done] best_ns22={best_ns22:.4f}, best_macro={best_macro:.4f}")
+    del optimizer, scheduler, scaler, mel_transform, spec_augment
+    gc.collect(); torch.cuda.empty_cache()
+    return best_ns22, best_macro
+
+print("OK train_r2 ready")

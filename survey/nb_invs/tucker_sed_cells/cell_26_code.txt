@@ -1,0 +1,17 @@
+# =================================================================
+# WRITE SUBMISSION
+# =================================================================
+if MODE != "infer":
+    print("Skipping submission (MODE='train')")
+else:
+    submission = pd.DataFrame(all_preds_arr, columns=PRIMARY_LABELS)
+    submission.insert(0, 'row_id', all_rows)
+    
+    assert submission.shape[1] == NUM_CLASSES + 1
+    assert submission['row_id'].is_unique
+    assert not submission.iloc[:, 1:].isna().any().any()
+    submission.iloc[:, 1:] = submission.iloc[:, 1:].clip(0.0, 1.0)
+    
+    submission.to_csv('submission.csv', index=False)
+    print(f'Wrote submission.csv: {len(submission)} rows x {submission.shape[1]} cols')
+    print(submission.head(3).iloc[:, :6])

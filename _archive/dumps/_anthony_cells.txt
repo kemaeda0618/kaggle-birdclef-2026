@@ -1,0 +1,145 @@
+=== anthonytherrien__birdclef-2026-ensemble-0-950 ===
+Total cells: 28
+
+[ 0] MD   id=?                              (  3839 chars)
+     ### [BirdCLEF+ 2026](https://www.kaggle.com/competitions/birdclef-2026/code?competitionId=129329&sor
+     Acoustic Species Identification in the Pantanal, South America
+     A solution that increases accuracy and achieves **LB**=[**0.950**](https://www.kaggle.com/code/kurok
+
+[ 1] MD   id=?                              (    24 chars)
+     ### preparing_parameters
+
+[ 2] CODE id=?                              (   284 chars)
+     solutions = {
+      #'task1'    : 'run SED once',
+      'type_add' : 'TAX_SMOOTHING',
+      'Models'   : [
+       {'Model':'Model_22','subm':'subm_22.csv','weight':0.0305,'xSED':[],          'LB':'0.928'},
+
+[ 3] CODE id=?                              (   446 chars)
+     _ensemble_models = [model['Model' ] for model in solutions['Models']]
+     _files_subm      = [model['subm'  ] for model in solutions['Models']]
+     _weights         = [model['weight'] for model in solutions['Models']]
+     _xsed            = [model['xSED'  ] for model in solutions['Models']]
+     _lbs             = [model['LB'    ] for model in solutions['Models']]
+
+[ 4] MD   id=?                              (    10 chars)
+     ## Model_1
+
+[ 5] CODE id=?                              ( 57061 chars)
+     if 'Model_1' in _ensemble_models or \
+        'task' in solutions and 'run Model_1_SED once' in solutions['task']:
+         _file_name_submission = "subm_1.csv"
+         # Install from bundled wheel (no network needed at scoring time)
+         !pip install -q /kaggle/input/datasets/tuckerarrants/perch-v2-no-dft-onnx/onnxruntime-1.24.4-cp3
+
+[ 6] MD   id=?                              (    11 chars)
+     ## Model_21
+
+[ 7] CODE id=?                              (142005 chars)
+     if 'Model_21' in _ensemble_models:
+         _file_name_submission = "subm_21.csv"
+         # Cell 0 — Install ONNX Runtime & TF 2.20
+         import subprocess, sys, os
+         # ONNX Runtime installation
+
+[ 8] MD   id=?                              (    11 chars)
+     ## Model_22
+
+[ 9] CODE id=?                              (142005 chars)
+     if 'Model_22' in _ensemble_models:
+         _file_name_submission = "subm_22.csv"
+         # Cell 0 — Install ONNX Runtime & TF 2.20
+         import subprocess, sys, os
+         # ONNX Runtime installation
+
+[10] MD   id=?                              (   266 chars)
+     ## Excerpts from the explanation Model_5's
+     ### data in his [birdclef 2026 exp019 eos4 rank power 06](https://www.kaggle.com/code/sunderekkiz/bi
+     expand the cell below
+
+[11] MD   id=?                              (  2169 chars)
+     #### exp019 — EoS.4 0.948 + exp017 lambda_prior=0.5 + rank_aware_scaling(power) 0.5 -> 0.6
+     Stacked single-scalar probe. Base = exp017 (Kaggle pending; expected >= 0.948 per
+     user UI signal). One additional scalar change layered on top:
+
+[12] MD   id=?                              (    11 chars)
+     ## Model_51
+
+[13] CODE id=?                              ( 88607 chars)
+     if 'Model_51' in _ensemble_models:
+         _file_name_submission = "subm_51.csv"
+         # #### exp019 — EoS.4 0.948 + exp017 lambda_prior=0.5 + rank_aware_scaling(power) 0.5 -> 0.6
+         # Stacked single-scalar probe. Base = exp017 (Kaggle pending; expected >= 0.948 per
+         # user UI signal). One additional scalar change layered on top:
+
+[14] MD   id=?                              (    11 chars)
+     ## Model_52
+
+[15] CODE id=?                              ( 90032 chars)
+     if 'Model_52' in _ensemble_models:
+         _file_name_submission = "subm_52.csv"
+         # #### exp019 — EoS.4 0.948 + exp017 lambda_prior=0.5 + rank_aware_scaling(power) 0.5 -> 0.6
+         # Stacked single-scalar probe. Base = exp017 (Kaggle pending; expected >= 0.948 per
+         # user UI signal). One additional scalar change layered on top:
+
+[16] MD   id=?                              (   245 chars)
+     ## Excerpts from the explanation Model_7's
+     ### data in his [v6_0949_replay](https://www.kaggle.com/code/yaroslavkholmirzayev/v6-0949-replay) by
+     expand the cell below
+
+[17] MD   id=?                              (  7606 chars)
+     #### exp_067: v6_prior065
+     Based on `exp_066_v6_prior060`.
+     Purpose: continue the positive prior-strength direction after `exp_066` ranked above its predecessor
+
+[18] MD   id=?                              (    11 chars)
+     ## Model_73
+
+[19] CODE id=?                              ( 86694 chars)
+     if 'Model_73' in _ensemble_models:
+         _file_name_submission = "subm_73.csv"
+         solut = {
+          'type_add'  : 'direct',
+          'Models'    : [
+
+[20] MD   id=?                              (    11 chars)
+     ## Model_74
+
+[21] CODE id=?                              ( 87109 chars)
+     if 'Model_74' in _ensemble_models:
+         _file_name_submission = "subm_74.csv"
+         solut = {
+          'type_add'  : 'direct',
+          'Models'    : [
+
+[22] MD   id=?                              (     8 chars)
+     ## blend
+
+[23] CODE id=?                              (  7750 chars)
+     # direct_add
+     import pandas as pd, os, time, sys
+     from warnings import filterwarnings; filterwarnings("ignore")
+     def direct_add2():
+         print(f'Ensemble: {_ensemble_models},   LB: {_lbs},   weights: {_weights}')
+
+[24] CODE id=?                              (  4957 chars)
+     # ---------------------------
+     # Taxonomy smoothing post-processing
+     # ---------------------------
+     def f_TAX_SMOOTHING_POSTPROC(
+         f_direct=direct,
+
+[25] CODE id=?                              (   291 chars)
+     if solutions['type_add'] == 'rank.1':             f_add = rank_1
+     if solutions['type_add'] == 'direct':             f_add = direct
+     if solutions['type_add'] == 'division_attention': f_add = division_attention
+     if solutions['type_add'] == 'TAX_SMOOTHING':      f_add = f_TAX_SMOOTHING_POSTPROC
+
+[26] MD   id=?                              (     9 chars)
+     ## Submit
+
+[27] CODE id=?                              (    74 chars)
+     submission = f_add()
+     submission . to_csv(f"submission.csv", index = True)
+

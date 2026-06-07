@@ -1,0 +1,339 @@
+
+================================================================================
+NB: anthonytherrien__birdclef-2026-ensemble-0-950
+  File: birdclef-2026-ensemble-0-950.ipynb (768.7KB)
+================================================================================
+  Cells: 13 code + 15 markdown
+
+  --- First markdown (intro/description) ---
+    ### [BirdCLEF+ 2026](https://www.kaggle.com/competitions/birdclef-2026/code?competitionId=129329&sortBy=scoreDescending&
+    Acoustic Species Identification in the Pantanal, South America
+    A solution that increases accuracy and achieves **LB**=[**0.950**](https://www.kaggle.com/code/kuroko1t/birdclef-2026-ya
+    - exp_071: eos5_prior065_rankpower065 &nbsp; Based on exp_069_eos5_prior065_microblend.
+    - Purpose: test the next independent scalar axis after lambda_prior=0.70 regressed versus exp_069.
+    - Only active code change versus exp_069: inside Model_5, change rank_aware_scaling(..., power=0.6) to power=0.65.
+    - Keep lambda_prior=0.65 and the top-level EOS blend 0.0305 * Model_2 + 0.9695 * Model_5.
+    The cornerstone here is also the kindly provided new function - namely, [**f_TAX_SMOOTHING_POSTPROC**()](#blend)
+    We'll transfer the exact same execution logic to our previous notebook with this new function. We'll observe the differe
+    | &nbsp;| &nbsp; | &nbsp; | &nbsp; | &nbsp; | &nbsp; | &nbsp; |
+    | - | :-: | :-: | :-: | :-: | :-: | :-: |
+    | [Model](#Model_1)_1<br>[Model](#Model_1)_11<br>[Model](#Model_1)_12 | [0.917](https://www.kaggle.com/code/tuckerarrant
+    |||||||
+    | [Model](#Model_21)_21<br>[Model](#Model_22)_22 | [0.928](https://www.kaggle.com/code/hideyukizushi/bird26-reproduce-pe
+    ... (+12 more lines)
+
+  --- LB / weight / blend ratio mentions ---
+    - Keep lambda_prior=0.65 and the top-level EOS blend 0.0305 * Model_2 + 0.9695 * Model_5.
+    weights   = 1.0 / (freq ** 0.5)
+
+  --- Techniques present ---
+    [YES] Tucker SED 5-fold ONNX
+    [YES] Perch v2 ONNX
+    [YES] LightProtoSSM
+    [YES] ResidualSSM
+    [YES] MLP probes
+    [YES] ProtoSSM v5
+    [YES] Sonotype mirror
+    [YES] Rank blend
+    [YES] Temperature scaling
+    [YES] Adaptive smoothing
+    [YES] Isotonic Calibration
+    [YES] Per-class Threshold
+    [YES] TTA (TimeShift)
+    [YES] FCS (file conf scale)
+    [YES] Hour prior
+    [YES] Site prior
+    [YES] EfficientNet
+    [YES] Transformer
+    [YES] Waveform cache
+    [YES] Cross-Attention
+    [YES] OOF eval
+
+  --- Techniques ABSENT ---
+
+================================================================================
+NB: fleongg__birdclef-2026-eos-9-claude-fork
+  File: birdclef-2026-eos-9-claude-fork.ipynb (776.8KB)
+================================================================================
+  Cells: 15 code + 19 markdown
+
+  --- First markdown (intro/description) ---
+    ### [BirdCLEF+ 2026](https://www.kaggle.com/competitions/birdclef-2026/code?competitionId=129329&sortBy=scoreDescending&
+    &nbsp;
+    #### **Dear colleagues, developers, and friends**!
+    This notebook contains all of our work ( EoS ), or rather, summaries of your work, in version order! You can easily view
+    This is likely our last or second-to-last public work in this competition.
+    We really enjoyed this competition—it was filled with a technical and competitive spirit.
+    We would like to express our gratitude to all the participants!
+    **We wish you good luck in completing it and achieving positions worthy of your diligent and honest work**!
+    &nbsp;
+    This is the same notebook as [EoS.7 (bz)](https://www.kaggle.com/code/nina2025/birdclef-2026-eos-7-bz) + [EoS.7 (sz)](ht
+    [**swordsman**](https://www.kaggle.com/liuyanfeng):
+    ... (+45 more lines)
+
+  --- LB / weight / blend ratio mentions ---
+    - Keep lambda_prior=0.65 and the top-level EOS blend 0.0305 * Model_2 + 0.9695 * Model_5.
+    weights   = 1.0 / (freq ** 0.5)
+
+  --- Techniques present ---
+    [YES] Tucker SED 5-fold ONNX
+    [YES] Perch v2 ONNX
+    [YES] LightProtoSSM
+    [YES] ResidualSSM
+    [YES] MLP probes
+    [YES] ProtoSSM v5
+    [YES] Sonotype mirror
+    [YES] Rank blend
+    [YES] Temperature scaling
+    [YES] Adaptive smoothing
+    [YES] Isotonic Calibration
+    [YES] Per-class Threshold
+    [YES] TTA (TimeShift)
+    [YES] FCS (file conf scale)
+    [YES] Hour prior
+    [YES] Site prior
+    [YES] EfficientNet
+    [YES] Transformer
+    [YES] Waveform cache
+    [YES] Cross-Attention
+    [YES] OOF eval
+
+  --- Techniques ABSENT ---
+
+================================================================================
+NB: gendaijin__birdclef2026-day0529-raunak-v9-latest
+  File: birdclef2026-day0529-raunak-v9-latest.ipynb (355.0KB)
+================================================================================
+  Cells: 9 code + 8 markdown
+
+  --- First markdown (intro/description) ---
+    # BirdCLEF 2026: Dual-Pipeline Architecture and Ensemble Methodology
+    This notebook executes a complex ensembling strategy, combining a frame-wise Sound Event Detection (SED) model with a se
+
+  --- LB / weight / blend ratio mentions ---
+    p_blend = 0.5 * p_clip + 0.5 * p_fmax
+    weights   = 1.0 / (freq ** 0.5)
+
+  --- Techniques present ---
+    [YES] Tucker SED 5-fold ONNX
+    [YES] Perch v2 ONNX
+    [YES] LightProtoSSM
+    [YES] ResidualSSM
+    [YES] MLP probes
+    [YES] ProtoSSM v5
+    [YES] BirdNET
+    [YES] Sonotype mirror
+    [YES] Rank blend
+    [YES] Temperature scaling
+    [YES] Adaptive smoothing
+    [YES] Isotonic Calibration
+    [YES] Per-class Threshold
+    [YES] TTA (TimeShift)
+    [YES] FCS (file conf scale)
+    [YES] Hour prior
+    [YES] Site prior
+    [YES] EfficientNet
+    [YES] Transformer
+    [YES] Waveform cache
+    [YES] Cross-Attention
+    [YES] OOF eval
+
+  --- Techniques ABSENT ---
+
+================================================================================
+NB: liuyanfeng__birdclef-2026-add-transformer
+  File: birdclef-2026-add-transformer.ipynb (785.5KB)
+================================================================================
+  Cells: 14 code + 16 markdown
+
+  --- First markdown (intro/description) ---
+    ### [BirdCLEF+ 2026](https://www.kaggle.com/competitions/birdclef-2026/code?competitionId=129329&sortBy=scoreDescending&
+    Acoustic Species Identification in the Pantanal, South America
+    A solution that increases accuracy and achieves **LB**=[**0.950**](https://www.kaggle.com/code/kuroko1t/birdclef-2026-ya
+    - exp_071: eos5_prior065_rankpower065 &nbsp; Based on exp_069_eos5_prior065_microblend.
+    - Purpose: test the next independent scalar axis after lambda_prior=0.70 regressed versus exp_069.
+    - Only active code change versus exp_069: inside Model_5, change rank_aware_scaling(..., power=0.6) to power=0.65.
+    - Keep lambda_prior=0.65 and the top-level EOS blend 0.0305 * Model_2 + 0.9695 * Model_5.
+    The cornerstone here is also the kindly provided new function - namely, [**f_TAX_SMOOTHING_POSTPROC**()](#blend)
+    We'll transfer the exact same execution logic to our previous notebook with this new function. We'll observe the differe
+    | &nbsp;| &nbsp; | &nbsp; | &nbsp; | &nbsp; | &nbsp; | &nbsp; |
+    | - | :-: | :-: | :-: | :-: | :-: | :-: |
+    | [Model](#Model_1)_1<br>[Model](#Model_1)_11<br>[Model](#Model_1)_12 | [0.917](https://www.kaggle.com/code/tuckerarrant
+    |||||||
+    | [Model](#Model_21)_21<br>[Model](#Model_22)_22 | [0.928](https://www.kaggle.com/code/hideyukizushi/bird26-reproduce-pe
+    ... (+12 more lines)
+
+  --- LB / weight / blend ratio mentions ---
+    - Keep lambda_prior=0.65 and the top-level EOS blend 0.0305 * Model_2 + 0.9695 * Model_5.
+    weights   = 1.0 / (freq ** 0.5)
+
+  --- Techniques present ---
+    [YES] Tucker SED 5-fold ONNX
+    [YES] Perch v2 ONNX
+    [YES] LightProtoSSM
+    [YES] ResidualSSM
+    [YES] MLP probes
+    [YES] ProtoSSM v5
+    [YES] Sonotype mirror
+    [YES] Rank blend
+    [YES] Temperature scaling
+    [YES] Adaptive smoothing
+    [YES] Isotonic Calibration
+    [YES] Per-class Threshold
+    [YES] TTA (TimeShift)
+    [YES] FCS (file conf scale)
+    [YES] Hour prior
+    [YES] Site prior
+    [YES] ConvNeXt
+    [YES] EfficientNet
+    [YES] Transformer
+    [YES] Waveform cache
+    [YES] Cross-Attention
+    [YES] OOF eval
+
+  --- Techniques ABSENT ---
+
+================================================================================
+NB: marynaborovska__birdclef-26-two-pass-ssm-advanced-pp
+  File: birdclef-26-two-pass-ssm-advanced-pp.ipynb (105.1KB)
+================================================================================
+  Cells: 27 code + 1 markdown
+
+  --- First markdown (intro/description) ---
+    # BirdCLEF 2026: Two-Pass SSM Ensemble & Advanced Post-Processing
+    Thanks to @vyankteshdwivedi for providing the baseline.
+    This notebook implements a sophisticated, multi-stage audio classification pipeline for the BirdCLEF 2026 competition. I
+    The architecture is designed to handle the temporal dynamics of 60-second audio files (split into 12 non-overlapping 5-s
+    ## 1. Core Architecture
+    The solution uses a staggered, two-pass modeling approach to fuse raw acoustic features with contextual metadata.
+    ### Pass 1: First-Pass Ensemble (LightProtoSSM + MLP Probes)
+    The first pass generates a robust baseline prediction by ensembling a sequence model with species-specific probes:
+    * **LightProtoSSM with Cross-Attention**: 
+        * A bidirectional Selective State-Space Model designed to capture temporal context across the 12 windows.
+        * **Inputs**: Perch embeddings (1536-d, projected to 128-d), raw Perch logits, and learned spatial-temporal metadata
+        * **Architecture**: Features two forward and backward SSM layers (using `d_state=16`), interleaved with 2-head cross
+        * **Prototyping**: It learns a set of class prototypes (`n_classes=234`) initialized from the mean embeddings of pos
+    ... (+33 more lines)
+
+  --- LB / weight / blend ratio mentions ---
+    def train_mlp_probes(emb, scores_raw, Y, min_pos=5, pca_dim=64, alpha_blend=0.4):
+    weights   = 1.0 / (freq ** 0.5)
+
+  --- Techniques present ---
+    [YES] Perch v2 ONNX
+    [YES] LightProtoSSM
+    [YES] ResidualSSM
+    [YES] MLP probes
+    [YES] Rank blend
+    [YES] Temperature scaling
+    [YES] Adaptive smoothing
+    [YES] Isotonic Calibration
+    [YES] Per-class Threshold
+    [YES] TTA (TimeShift)
+    [YES] FCS (file conf scale)
+    [YES] Hour prior
+    [YES] Transformer
+    [YES] 10s sliding
+    [YES] 20s sliding
+    [YES] Cross-Attention
+    [YES] OOF eval
+
+  --- Techniques ABSENT ---
+
+================================================================================
+NB: raunakdey07__birdclef-2026-multi-model-ensemble
+  File: birdclef-2026-multi-model-ensemble.ipynb (107.0KB)
+================================================================================
+  Cells: 26 code + 12 markdown
+
+  --- First markdown (intro/description) ---
+    # BirdCLEF 2026: ONNX Perch + Sequence Modeling & SED Blend
+    Welcome to the complete, all-public CPU inference pipeline behind my submission. 
+    This notebook doesn't rely on a single magic trick; it is built on a highly optimized, compute-aware pipeline. By combin
+    ### TL;DR of the Architecture
+    * **Accelerated Backbone:** ONNX-optimized Perch v2 for massive CPU inference speedups.
+    * **Dynamic Sequence Modeling:** In-notebook training of a cross-attention `LightProtoSSM` and vectorized MLP probes to 
+    * **Adaptive Post-Processing:** A robust stack featuring isotonic calibration, file-level confidence scaling, adaptive d
+    * **Rank-Aware Blend:** A 60/40 rank-averaged ensemble combining the temporal sequence branch with Tucker Arrants' publi
+    ### Compliance & Lineage
+    This is an annotated write-up of an all-public Kaggle workflow. Internet is disabled, and execution relies entirely on c
+    | Component | Public Source |
+    | :--- | :--- |
+    | Base notebook & ONNX sequence pipeline | Vyanktesh Dwivedi, `birdclef-2026-onnx-perch-sequence-modeling` |
+    | Distilled SED ONNX folds | Tucker Arrants, `bc2026-distilled-sed-public` |
+    ... (+3 more lines)
+
+  --- LB / weight / blend ratio mentions ---
+    def train_mlp_probes(emb, scores_raw, Y, min_pos=5, pca_dim=64, alpha_blend=0.4):
+    weights   = 1.0 / (freq ** 0.5)
+
+  --- Techniques present ---
+    [YES] Tucker SED 5-fold ONNX
+    [YES] Perch v2 ONNX
+    [YES] LightProtoSSM
+    [YES] ResidualSSM
+    [YES] MLP probes
+    [YES] Sonotype mirror
+    [YES] Rank blend
+    [YES] Temperature scaling
+    [YES] Adaptive smoothing
+    [YES] Isotonic Calibration
+    [YES] Per-class Threshold
+    [YES] TTA (TimeShift)
+    [YES] FCS (file conf scale)
+    [YES] Hour prior
+    [YES] Transformer
+    [YES] 10s sliding
+    [YES] Cross-Attention
+    [YES] OOF eval
+
+  --- Techniques ABSENT ---
+
+================================================================================
+NB: yaroslavkholmirzayev__0950-replay
+  File: 0950-replay.ipynb (350.1KB)
+================================================================================
+  Cells: 15 code + 12 markdown
+
+  --- First markdown (intro/description) ---
+    # exp_091: eos8_poweropt_only_tax
+    Structural ablation based on exp_090/exp_088. Uses the built-in RUN_MODE=poweropt_only preset to remove the low-weight y
+
+  --- LB / weight / blend ratio mentions ---
+    def train_mlp_probes(emb, scores_raw, Y, min_pos=5, pca_dim=64, alpha_blend=0.4):
+    Structural ablation based on exp_090/exp_088. Uses the built-in RUN_MODE=poweropt_only preset to remove the low-weight y
+    YUKIZ_BLEND_WEIGHT = 0.0305
+
+  --- Techniques present ---
+    [YES] Tucker SED 5-fold ONNX
+    [YES] Perch v2 ONNX
+    [YES] LightProtoSSM
+    [YES] ResidualSSM
+    [YES] MLP probes
+    [YES] ProtoSSM v5
+    [YES] BirdNET
+    [YES] Sonotype mirror
+    [YES] Rank blend
+    [YES] Temperature scaling
+    [YES] Adaptive smoothing
+    [YES] Isotonic Calibration
+    [YES] Per-class Threshold
+    [YES] TTA (TimeShift)
+    [YES] FCS (file conf scale)
+    [YES] Hour prior
+    [YES] ConvNeXt
+    [YES] Transformer
+    [YES] Sidecar
+    [YES] 10s sliding
+    [YES] Cross-Attention
+    [YES] OOF eval
+
+  --- Techniques ABSENT ---
+
+  --- BLEND weight assignments ---
+    YUKIZ_BLEND_WEIGHT = 0.0305
+    POWEROPT_BLEND_WEIGHT = 0.9695
+    YUKIZ_BLEND_WEIGHT = 0.0
+    POWEROPT_BLEND_WEIGHT = 1.0
+    assert 0.0 <= YUKIZ_BLEND_WEIGHT <= 1.0
+    assert 0.0 <= POWEROPT_BLEND_WEIGHT <= 1.0

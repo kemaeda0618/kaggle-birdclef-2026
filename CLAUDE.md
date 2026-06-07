@@ -146,7 +146,7 @@ with tempfile.TemporaryDirectory() as td:
         "kernel_type": "notebook",
         "is_private": True,
         "enable_gpu": False,           # 学習NBは True、推論NBは False
-        "enable_internet": True,
+        "enable_internet": True,       # 学習NB は True、★ 推論/提出 NB は必ず False
         "competition_sources": ["birdclef-2026"],
         "dataset_sources": [],         # 必要なら "user/dataset-slug" を追加
         "kernel_sources": [],
@@ -165,6 +165,14 @@ with tempfile.TemporaryDirectory() as td:
 - **REST API push (requests.post) は新規 kernel 作成不可** — id フィールドが numeric integer 必須で "Could not convert string to integer" エラーになる。新規作成は SDK 一択
 - **Slug は title から派生する (重要)** — `id` で `username/slug` を指定しても、Kaggle は title を slugify して URL slug を確定。title と slug が不一致だと "Your kernel title does not resolve to the specified id" 警告が出て title 由来が採用される。**意図した slug にしたい場合、title をそのまま slug 形式で書く** (例: title=`"BirdCLEF2026 exp011 train Phase1 SED"` → slug=`birdclef2026-exp011-train-phase1-sed`)
 - **slug は一度確定すると変更不可**、削除後もソフト予約が残る — 命名は初回 push で確定させる
+
+### Internet 設定 (重要)
+
+- **推論/提出 NB (submission) は必ず `"enable_internet": False`** — Kernels Only コンペの提出要件、internet=True の NB は submit fail or 不可
+- **学習 NB のみ `"enable_internet": True`** — pip install, HF download 等で必要
+- push スクリプト template で submit NB 用の `False` を明示すること。デフォルト True のままにしない
+- 例: `python experiment/expXXX/notebook/_push_nb_xxx.py` で submit NB を push する際は metadata の `enable_internet` を必ず確認
+- 既存 submit NB を internet=True で push してしまった場合は metadata 修正して再 push 必要
 
 ### GPU アクセラレータ設定
 
@@ -212,3 +220,10 @@ meta = {
 - test_soundscapes はローカルには存在せず、Kaggle 評価環境でのみ配置される
 - 外部データ使用は許可されているが、公開必須（コンペルールで確認）
 - 1日5回の提出制限あり
+
+## Sub 運用ルール (重要)
+
+- **★ Sub は毎日 5 回 reset、温存意味なし** — その日の残り sub は必ず使い切る (sub 残しは情報収集機会の損失)
+- **「明日のために save」は禁止** — 明日も 5 sub 来るので今日の残り使い切るのが strictly dominant
+- **Sub 価値判断は "情報量 × 残り日数"** — 例えば diagnostic sub (paradigm 確認) も valid な選択肢
+- **その日の sub 残数が 0 になるまで考案して使う** — 1 残ったら "M3' fold 0 で robustness 確認" 等の next-best use を立てる

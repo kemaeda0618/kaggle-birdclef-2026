@@ -1,0 +1,297 @@
+
+========= cell 0 id=hdr (code, 37 lines) =========
+# exp081 R1 — exp017 R1 + 10s window (Colab Pro G4)
+
+**exp017 R1 spec を完全踏襲、Window 5s → 10s に変更のみ**
+
+## Changes from exp017 R1
+- `TRAIN_DURATION` / `VAL_DURATION`: 5 → **10**
+- `TRAIN_SAMPLES` = 320,000 (10s × 32kHz)
+- Output paths: `output/exp081/r1/` (Drive)、`maekeso/birdclef2026-exp081-weights` (Kaggle Dataset)
+- Pseudo gen: 10s native (12 windows per file with stride 5s + overlap)
+
+## 不変項目 (exp017 R1 と同)
+- Backbone: eca_nfnet_l0
+- LR 3e-4 (NFNet rule、sqrt scaling 厳禁)
+- Batch 192 (G4 96GB 余裕)
+- N_TOTAL_EPOCHS 25 (R1 は longer)
+- WARMUP 3
+- ALPHA_DISTILL 1.0、Perch v2 distill
+- SHARES focal 0.85 / labeled_sc 0.15 (★ R1 = no pseudo)
+- Mixup α 0.4、SpecAug F=25/T=30 × 2
+
+## R1 → R2 flow
+
+```
+R1: focal + labeled_sc only (no pseudo) → exp081 R1 ckpt
+R1 pseudo gen: model.predict(soundscape) → pseudo_labels.csv (10s native)
+R2 (別 NB): focal + labeled_sc + R1 pseudo → exp081 R2 ckpt (final)
+```
+
+## 想定時間 (G4 96GB Blackwell)
+- 学習 25 epoch: ~5-6h (5s exp017 R1 43min の 10x、focal load も 2x)
+- pseudo gen on soundscape: ~30 min
+- 重み upload: 1-2 min
+- 合計: ~6-7h
+
+## 期待
+- val_ns22 ~0.91-0.93 (exp017 R1 0.9166 から +0.005-0.015 期待、temporal context 効)
+- R1 単独 sub はしない (R2 input 用)
+
+
+========= cell 1 id=setup (code, 45 lines) =========
+# ============================================================
+# Cell 1: Setup — Drive mount, pip install, kaggle.json
+# ============================================================
+!pip install -q timm onnxruntime-gpu librosa soundfile scipy
+
+from google.colab import drive
+drive.mount("/content/drive", force_remount=False)
+
+import os, json, shutil, time, subprocess
+from pathlib import Path
+
+DRIVE_INPUT_DIR  = Path("/content/drive/MyDrive/kaggle/birdclef2026")
+DRIVE_OUTPUT_DIR = DRIVE_INPUT_DIR / "output" / "exp081" / "r1"
+DRIVE_PSEUDO_DIR = DRIVE_INPUT_DIR / "output" / "exp081" / "r1-pseudo"
+DRIVE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+DRIVE_PSEUDO_DIR.mkdir(parents=True, exist_ok=True)
+assert DRIVE_INPUT_DIR.exists(), f"Drive input folder missing: {DRIVE_INPUT_DIR}"
+print(f"Drive input:  {DRIVE_INPUT_DIR}")
+print(f"Drive output: {DRIVE_OUTPUT_DIR}")
+print(f"Drive pseudo: {DRIVE_PSEUDO_DIR}")
+
+# kaggle.json (for Perch ONNX DL if needed + Kaggle Dataset upload)
+KJ_CANDIDATES = [
+    DRIVE_INPUT_DIR / "kaggle.json",
+    Path("/content/drive/MyDrive/kaggle.json"),
+]
+KJ = next((p for p in KJ_CANDIDATES if p.exists()), None)
+if KJ is not None:
+    KAGGLE_CFG = Path.home() / ".kaggle"
+    KAGGLE_CFG.mkdir(parents=True, exist_ok=True)
+    shutil.copy(str(KJ), str(KAGGLE_CFG / "kaggle.json"))
+    os.chmod(str(KAGGLE_CFG / "kaggle.json"), 0o600)
+    creds = json.loads(KJ.read_text())
+    if creds.get("key", "").startswith("KGAT_"):
+        os.environ["KAGGLE_API_TOKEN"] = creds["key"]
+    print(f"kaggle.json: {KJ}")
+else:
+    print("kaggle.json not found (Perch ONNX must already be on Drive, upload will fail)")
+
+LOCAL_DATA = Path("/content/data")
+LOCAL_OUT  = Path("/content/output")
+LOCAL_DATA.mkdir(parents=True, exist_ok=True)
+LOCAL_OUT.mkdir(parents=True, exist_ok=True)
+print(f"Local data: {LOCAL_DATA}")
+print(f"Local out:  {LOCAL_OUT}")
+
+
+========= cell 2 id=dl_data (code, 114 lines) =========
+# ============================================================
+# Cell 2: Data prep — Kaggle API direct DL (NO Drive copy)
+# ============================================================
+# Drive FUSE 個別 copy は 46k ファイルだと 1-3h かかるため、
+# competition data は Kaggle API の single zip で一括取得 (5-15 min)。
+import time, zipfile, subprocess
+from kaggle.api.kaggle_api_extended import KaggleApi
+from tqdm.auto import tqdm
+
+api = KaggleApi(); api.authenticate()
+print("kaggle authenticated")
+
+T0_total = time.time()
+
+TA_DIR = LOCAL_DATA / "train_audio"
+TS_DIR = LOCAL_DATA / "train_soundscapes"
+
+need_dl = (
+    not TA_DIR.exists() or sum(1 for _ in TA_DIR.rglob("*.ogg")) < 40000 or
+    not TS_DIR.exists() or sum(1 for _ in TS_DIR.glob("*.ogg")) < 10000
+)
+
+if need_dl:
+    print(f"\n[1/2] Downloading birdclef-2026 competition data (~25GB) via Kaggle API...")
+    print(f"      tqdm progress bar will appear (size in MB, %, ETA)")
+    t0 = time.time()
+    api.competition_download_files(
+        "birdclef-2026",
+        path=str(LOCAL_DATA),
+        force=False, quiet=False,
+    )
+    print(f"  DL done in {time.time()-t0:.0f}s ({time.time()-t0:.0f}/60={(time.time()-t0)/60:.1f} min)")
+
+    zips = list(LOCAL_DATA.glob("birdclef-2026*.zip"))
+    assert zips, "No birdclef-2026 zip found after download"
+    zip_path = zips[0]
+    print(f"\n[2/2] Extracting {zip_path.name} ({zip_path.stat().st_size/1e9:.1f}GB)...")
+    t_extract = time.time()
+    with zipfile.ZipFile(zip_path) as zf:
+        infos = zf.infolist()
+        total_bytes = sum(i.file_size for i in infos)
+        pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, unit_divisor=1024,
+                    desc="extract", smoothing=0.05, mininterval=1.0)
+        for info in infos:
+            zf.extract(info, LOCAL_DATA)
+            pbar.update(info.file_size)
+        pbar.close()
+    print(f"  extracted {len(infos)} entries in {time.time()-t_extract:.0f}s "
+          f"({(time.time()-t_extract)/60:.1f} min)")
+    zip_path.unlink()
+    print(f"  removed zip")
+else:
+    print("Competition data already present locally")
+
+# Verify
+n_ta = sum(1 for _ in TA_DIR.rglob("*.ogg")) if TA_DIR.exists() else 0
+n_ts = sum(1 for _ in TS_DIR.glob("*.ogg")) if TS_DIR.exists() else 0
+print(f"\n  train_audio:       {n_ta} .ogg files")
+print(f"  train_soundscapes: {n_ts} .ogg files")
+
+# Place CSVs under /content/data/competition (rest of NB expects this layout)
+comp = LOCAL_DATA / "competition"
+comp.mkdir(parents=True, exist_ok=True)
+for fn in ["train.csv", "taxonomy.csv", "sample_submission.csv", "train_soundscapes_labels.csv"]:
+    src_in_root = LOCAL_DATA / fn
+    dst = comp / fn
+    if src_in_root.exists() and not dst.exists():
+        shutil.copy2(str(src_in_root), str(dst))
+        print(f"  competition/{fn} OK")
+    elif not src_in_root.exists():
+        drive_src = DRIVE_INPUT_DIR / fn
+        if drive_src.exists() and not dst.exists():
+            shutil.copy2(str(drive_src), str(dst))
+            print(f"  competition/{fn} OK (from Drive fallback)")
+
+# Perch ONNX (Drive 優先、無ければ Kaggle DL)
+po_dir = LOCAL_DATA / "perch-onnx"
+po_dir.mkdir(parents=True, exist_ok=True)
+PERCH_PATH = po_dir / "perch_v2_no_dft.onnx"
+
+if not PERCH_PATH.exists():
+    drive_perch_candidates = list(DRIVE_INPUT_DIR.rglob("perch_v2*.onnx"))
+    if drive_perch_candidates:
+        src = drive_perch_candidates[0]
+        sz = src.stat().st_size
+        print(f"\nCopying Perch ONNX from Drive: {src.name} ({sz/1e9:.2f}GB)")
+        t0 = time.time()
+        with open(src, "rb") as fin, open(PERCH_PATH, "wb") as fout:
+            pbar = tqdm(total=sz, unit="B", unit_scale=True, unit_divisor=1024,
+                        desc="Perch copy", mininterval=1.0)
+            while True:
+                buf = fin.read(8 * 1024 * 1024)
+                if not buf: break
+                fout.write(buf); pbar.update(len(buf))
+            pbar.close()
+        print(f"  done in {time.time()-t0:.0f}s")
+    else:
+        print("\nPerch ONNX not on Drive, downloading from Kaggle...")
+        t0 = time.time()
+        api.dataset_download_files(
+            "tuckerarrants/perch-v2-no-dft-onnx",
+            path=str(po_dir), unzip=True, quiet=False)
+        print(f"  done in {time.time()-t0:.0f}s")
+        if not PERCH_PATH.exists():
+            hits = list(po_dir.rglob("perch_v2*.onnx"))
+            if hits and hits[0] != PERCH_PATH:
+                shutil.move(str(hits[0]), str(PERCH_PATH))
+assert PERCH_PATH.exists(), f"Perch ONNX missing: {PERCH_PATH}"
+print(f"Perch ONNX: {PERCH_PATH} ({PERCH_PATH.stat().st_size/1e9:.2f} GB)")
+
+# Disk summary
+print(f"\n=== Total DL time: {(time.time()-T0_total)/60:.1f} min ===")
+r = subprocess.run(["df", "-h", "/content"], capture_output=True, text=True)
+print(r.stdout)
+
+
+========= cell 18 id=upload_hdr (code, 7 lines) =========
+---
+# Phase 3: Kaggle Dataset upload
+
+R1 weights を `maekeso/birdclef2026-exp017-weights` Dataset として upload。
+exp017 R2 (next session) や infer NB から参照可能になる。
+
+[[feedback_kaggle_dataset_403_not_found]]: dataset_view で事前存在チェックして 403/404 罠を回避
+
+
+========= cell 19 id=upload (code, 60 lines) =========
+# ============================================================
+# Cell 17: Upload R1 weights to Kaggle Dataset
+# ============================================================
+import tempfile
+
+USER  = "maekeso"
+SLUG  = "birdclef2026-exp081-weights"
+TITLE = "birdclef2026 exp081 weights"
+
+TARGETS = ["ckpt_best_ns22.pth", "ckpt_best_macro.pth", "ckpt_latest.pth", "history.json"]
+
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    for fn in TARGETS:
+        src = DRIVE_OUTPUT_DIR / fn
+        if not src.exists():
+            print(f"  skip (missing): {fn}")
+            continue
+        shutil.copy2(str(src), str(td / fn))
+        print(f"  staged: {fn}  ({src.stat().st_size/1e6:.1f}MB)")
+
+    meta = {
+        "title": TITLE,
+        "id": f"{USER}/{SLUG}",
+        "licenses": [{"name": "CC0-1.0"}],
+    }
+    (td / "dataset-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    version_notes = f"R1 v2 (LR=3e-4, ep=25) best_ns22={best_ns22:.4f}"
+    uploaded = False
+
+    try:
+        api.dataset_view(f"{USER}/{SLUG}")
+        dataset_exists = True
+        print(f"\nDataset {USER}/{SLUG} exists → create new VERSION")
+    except Exception:
+        dataset_exists = False
+        print(f"\nDataset {USER}/{SLUG} not found → CREATE new dataset")
+
+    if dataset_exists:
+        try:
+            api.dataset_create_version(folder=str(td),
+                                        version_notes=version_notes,
+                                        dir_mode="zip", quiet=False)
+            print(f"\nOK Uploaded (new version) — {version_notes}")
+            uploaded = True
+        except Exception as e:
+            print(f"  dataset_create_version error: {str(e)[:400]}")
+    else:
+        try:
+            api.dataset_create_new(folder=str(td), public=False, dir_mode="zip", quiet=False)
+            print(f"\nOK Created (first time)")
+            uploaded = True
+        except Exception as e:
+            print(f"  dataset_create_new error: {str(e)[:400]}")
+
+    if uploaded:
+        print(f"\nDataset URL: https://www.kaggle.com/datasets/{USER}/{SLUG}")
+    else:
+        print("\n[WARN] Upload failed — check logs above; you can retry this cell alone.")
+
+
+========= cell 20 id=final_summary (code, 16 lines) =========
+# ============================================================
+# Cell 18: Final session summary (train + pseudo + upload)
+# ============================================================
+total_time = time.time() - TRAIN_START
+print(f"\n{'='*60}")
+print(f"exp017 R1 full session summary")
+print(f"{'='*60}")
+print(f"  Backbone:             {BACKBONE}")
+print(f"  Epochs:               {trained_up_to}/{N_TOTAL_EPOCHS}")
+print(f"  Best ns22 AUC:        {best_ns22:.4f}")
+print(f"  Best macro AUC:       {best_macro:.4f}")
+print(f"  Pseudo CSV:           {DRIVE_PSEUDO_DIR}/pseudo_labels.csv")
+print(f"  Kaggle Dataset:       https://www.kaggle.com/datasets/maekeso/birdclef2026-exp017-weights")
+print(f"  Total session time:   {total_time/60:.1f} min  ({total_time/3600:.2f}h)")
+print(f"\n  Drive output:  {DRIVE_OUTPUT_DIR}")
+print(f"  Drive pseudo:  {DRIVE_PSEUDO_DIR}")
+

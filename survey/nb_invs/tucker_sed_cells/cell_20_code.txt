@@ -1,0 +1,33 @@
+# =================================================================
+# INFERENCE -- Mel spectrogram (librosa)
+# =================================================================
+if MODE != "infer":
+    print("Skipping inference setup (MODE='train')")
+else:
+    import librosa
+
+    INF_N_MELS   = 256
+    INF_N_FFT    = 2048
+    INF_HOP      = 512
+    INF_FMIN     = 20
+    INF_FMAX     = 16000
+    INF_TOP_DB   = 80
+    INF_SR       = 32000
+    INF_CHUNK_S  = 5
+    INF_CHUNK_N  = INF_SR * INF_CHUNK_S   # 160,000
+    INF_N_FRAMES = INF_CHUNK_N // INF_HOP + 1  # 313
+    
+    def audio_to_mel(chunks):
+        """Raw audio chunks (N, 160000) -> normalized mel dB (N, 1, 128, 313)."""
+        mels = []
+        for i in range(chunks.shape[0]):
+            S = librosa.feature.melspectrogram(
+                y=chunks[i], sr=INF_SR, n_fft=INF_N_FFT, hop_length=INF_HOP,
+                n_mels=INF_N_MELS, fmin=INF_FMIN, fmax=INF_FMAX, power=2.0,
+            )
+            S_dB = librosa.power_to_db(S, top_db=INF_TOP_DB)
+            S_dB = (S_dB - S_dB.mean()) / (S_dB.std() + 1e-6)
+            mels.append(S_dB)
+        return np.stack(mels)[:, np.newaxis, :, :].astype(np.float32)
+    
+    print(f"Inference mel: {INF_N_MELS} mels, {INF_N_FRAMES} frames/chunk")

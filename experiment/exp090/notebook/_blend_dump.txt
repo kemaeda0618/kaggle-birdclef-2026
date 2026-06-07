@@ -1,0 +1,154 @@
+# === Stage C: 3-way rank blend (NB4 + Tucker + exp029) + Sonotype mirror + submission ===
+# exp031 ratio config (w35-40-25, slot3 = exp029 instead of e17):
+BLEND_W_E10  = 0.35   # NB4 v7 weight
+BLEND_W_SED  = 0.40   # Tucker public SED weight
+BLEND_W_E17  = 0.25   # exp029 R3 (eca_nfnet_l1) weight — note var name kept "E17" for code reuse
+USE_SED_PRE_AVG = False
+
+assert abs(BLEND_W_E10 + BLEND_W_SED + BLEND_W_E17 - 1.0) < 1e-6, \
+    "blend weights must sum to 1.0"
+
+flat_e10 = probs_exp010.reshape(-1, probs_exp010.shape[-1])
+flat_sed = probs_sed.reshape(-1, probs_sed.shape[-1])
+flat_e17 = probs_e17.reshape(-1, probs_e17.shape[-1])  # ← actually exp029
+
+if USE_SED_PRE_AVG:
+    _eps = 1e-7
+    _l_sed = np.log(np.clip(flat_sed, _eps, 1 - _eps)) - np.log1p(-np.clip(flat_sed, _eps, 1 - _eps))
+    _l_e17 = np.log(np.clip(flat_e17, _eps, 1 - _eps)) - np.log1p(-np.clip(flat_e17, _eps, 1 - _eps))
+    _w_sed = BLEND_W_SED / (BLEND_W_SED + BLEND_W_E17)
+    _w_e17 = BLEND_W_E17 / (BLEND_W_SED + BLEND_W_E17)
+    _l_sed_avg = _w_sed * _l_sed + _w_e17 * _l_e17
+    flat_sed_combined = (1.0 / (1.0 + np.exp(-np.clip(_l_sed_avg, -50, 50)))).astype(np.float32)
+    rank_e10 = pd.DataFrame(flat_e10).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    rank_sed = pd.DataFrame(flat_sed_combined).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    _w_nb4 = BLEND_W_E10
+    _w_sed_total = BLEND_W_SED + BLEND_W_E17
+    blend_flat = _w_nb4 * rank_e10 + _w_sed_total * rank_sed
+    print(f"  SED-pre-avg mode: NB4={_w_nb4:.2f} / (Tucker+e29)={_w_sed_total:.2f} "
+          f"(Tucker:e29 internal = {_w_sed:.2f}:{_w_e17:.2f})")
+else:
+    rank_e10 = pd.DataFrame(flat_e10).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    rank_sed = pd.DataFrame(flat_sed).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    rank_e17 = pd.DataFrame(flat_e17).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    blend_flat = (BLEND_W_E10 * rank_e10
+                  + BLEND_W_SED * rank_sed
+                  + BLEND_W_E17 * rank_e17)
+    print(f"  3-way rank blend: NB4={BLEND_W_E10} / Tucker={BLEND_W_SED} / e29={BLEND_W_E17}")
+
+# === Sonotype mirror (公開 0.946 NB Cell 40) ===
+MIRROR_PAIRS = (
+    ("47158son15", "47158son16"),
+    ("47158son09", "47158son12"),
+    ("47158son02", "47158son14"),
+    ("47158son13", "47158son21", "47158son22", "47158son23"),
+)
+col_to_idx = {lbl: i for i, lbl in enumerate(PRIMARY_LABELS)}
+mirror_count = 0
+for group in MIRROR_PAIRS:
+    valid_idx = [col_to_idx[s] for s in group if s in col_to_idx]
+    if len(valid_idx) >= 2:
+        group_max = blend_flat[:, valid_idx].max(axis=1, keepdims=True)
+        blend_flat[:, valid_idx] = group_max
+        mirror_count += len(valid_idx)
+print(f"  Sonotype mirror applied to {mirror_count} columns")
+
+probs_blend = blend_flat.reshape(probs_exp010.shape)
+print(f"blend shape: {probs_blend.shape}, mean={probs_blend.mean():.4f}, max={probs_blend.max():.4f}")
+
+preds_array = probs_blend.reshape(-1, N_CLASSES)
+_n, _c = preds_array.shape
+_view = preds_array.reshape(-1, N_WINDOWS, _c)
+_sorted = np.sort(_view, axis=1)
+_topk_mean = _sorted[:, -FCS_TOP_K:, :].mean(axis=1, keepdims=True)
+_scale = np.power(_topk_mean, FCS_POWER)
+preds_array = (_view * _scale).reshape(_n, _c).astype(np.float32)
+
+submission = pd.DataFrame(preds_array, columns=PRIMARY_LABELS)
+submission.insert(0, "row_id", all_row_ids)
+
+sample_sub = pd.read_csv(BASE / "sample_submission.csv")
+expected_ids = set(sample_sub["row_id"])
+our_ids = set(submission["row_id"])
+missing = expected_ids - our_ids
+if missing:
+    print(f"WARNING: {len(missing)} missing row_ids - filling zeros")
+    missing_df = pd.DataFrame({"row_id": list(missing)})
+    for sp in PRIMARY_LABELS:
+        missing_df[sp] = 0.0
+    submission = pd.concat([submission, missing_df], ignore_index=True)
+extra = our_ids - expected_ids
+if extra:
+    submission = submission[submission["row_id"].isin(expected_ids)]
+submission = submission.set_index("row_id").loc[sample_sub["row_id"]].reset_index()
+# === ★ exp090: Taxonomy smoothing post-processing (from anthonytherrien 0.950 NB) ===
+# Genus-level smoothing (α=0.15) + Class-level smoothing (α=0.05)
+# Expected lift: +0.001-0.002 (independent post-process after blend)
+def f_tax_smoothing(submission, genus_alpha=0.15, class_alpha=0.05):
+    """Smooth predictions within taxonomic genera and classes."""
+    tax_paths = [
+        Path("/kaggle/input/competitions/birdclef-2026/taxonomy.csv"),
+        Path("/kaggle/input/birdclef-2026/taxonomy.csv"),
+    ]
+    taxonomy_df = None
+    for p in tax_paths:
+        if p.exists():
+            taxonomy_df = pd.read_csv(p)
+            break
+    if taxonomy_df is None:
+        print("[tax_smooth] taxonomy.csv not found — skip")
+        return submission
+
+    species_to_genus = {}
+    species_to_class = {}
+    for _, row in taxonomy_df.iterrows():
+        label = str(row["primary_label"])
+        sci = str(row.get("scientific_name", ""))
+        cls = str(row.get("class_name", ""))
+        genus = sci.split(" ")[0] if " " in sci else sci
+        species_to_genus[label] = genus
+        species_to_class[label] = cls
+
+    label_cols = [c for c in submission.columns if c != "row_id"]
+    genus_groups = {}
+    class_groups = {}
+    for col in label_cols:
+        g = species_to_genus.get(col, col)
+        c = species_to_class.get(col, "")
+        genus_groups.setdefault(g, []).append(col)
+        if c:
+            class_groups.setdefault(c, []).append(col)
+    multi_genus = {k: v for k, v in genus_groups.items() if len(v) > 1}
+    multi_class = {k: v for k, v in class_groups.items() if len(v) > 1}
+    print(f"[tax_smooth] pre: mean={submission[label_cols].values.mean():.6f}")
+    print(f"[tax_smooth] multi-genus groups: {len(multi_genus)}, multi-class: {len(multi_class)}")
+
+    probs = submission[label_cols].values.astype(np.float32).copy()
+    col_to_idx = {c: i for i, c in enumerate(label_cols)}
+
+    # Genus smoothing
+    for _, members in multi_genus.items():
+        idx = [col_to_idx[m] for m in members]
+        g_mean = probs[:, idx].mean(axis=1, keepdims=True)
+        probs[:, idx] = (1 - genus_alpha) * probs[:, idx] + genus_alpha * g_mean
+
+    # Class smoothing
+    for _, members in multi_class.items():
+        idx = [col_to_idx[m] for m in members]
+        c_mean = probs[:, idx].mean(axis=1, keepdims=True)
+        probs[:, idx] = (1 - class_alpha) * probs[:, idx] + class_alpha * c_mean
+
+    submission[label_cols] = probs
+    print(f"[tax_smooth] post: mean={submission[label_cols].values.mean():.6f}")
+    return submission
+
+# Apply tax smoothing
+submission = f_tax_smoothing(submission, genus_alpha=0.15, class_alpha=0.05)
+
+submission.to_csv("submission.csv", index=False)
+
+total = time.time() - START
+print(f"\nSubmission: {submission.shape}, total {total:.0f}s ({total/60:.1f} min)")
+print(f"Mean pred: {submission[PRIMARY_LABELS].values.mean():.6f}")
+print(f"Max pred:  {submission[PRIMARY_LABELS].values.max():.6f}")
+print(submission.head())

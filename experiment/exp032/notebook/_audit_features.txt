@@ -1,0 +1,196 @@
+================================================================================
+CHECK: TopN / FCS / file-level post-process (Task #75)
+================================================================================
+
+--- exp044 (NB4+ResSSM) ---
+  [hdr] v11 (NB4 ProtoSSM+MLP+KD+Retrieval+E19+FCS+Season prior+Mirror+G26 calibration) を keep し、
+  [config] FCS_TOP_K = 2
+  [config] FCS_POWER = 0.4
+  [load] file_labels = (lab_labels_files.sum(axis=1) > 0).astype(np.float32)
+  [load] _lab_pool_norm = np.linalg.norm(lab_pool_emb, axis=1, keepdims=True) + 1e-8
+  [load] _ta_norm = np.linalg.norm(_ta_emb_raw, axis=1, keepdims=True) + 1e-8
+  [load] _an_norm = np.linalg.norm(_an_emb, axis=1, keepdims=True) + 1e-8
+  [load] _in_norm = np.linalg.norm(_in_emb, axis=1, keepdims=True) + 1e-8
+  [onnx-test] y = y.mean(axis=1)
+  [onnx-test] scores[:, pos] = logits[:, bc_idx_arr].max(axis=1)
+  [onnx-test] e_norm = test_emb / (np.linalg.norm(test_emb, axis=1, keepdims=True) + 1e-8)
+  [onnx-test] topk_idx = np.argpartition(w_sim, -K_eff, axis=1)[:, -K_eff:]
+  [onnx-test] topk_sim = np.take_along_axis(w_sim, topk_idx, axis=1)
+  [onnx-test] topk_label = lab_pool_labels[topk_idx]
+  [onnx-test] sm = topk_sim - topk_sim.max(axis=1, keepdims=True)
+  [onnx-test] sm = sm / (sm.sum(axis=1, keepdims=True) + 1e-8)
+  [onnx-test] p = (sm[..., None] * topk_label).sum(axis=1)
+  [onnx-test] e_norm = test_emb / (np.linalg.norm(test_emb, axis=1, keepdims=True) + 1e-8)
+  [onnx-test] topk_idx = np.argpartition(sim, -K_eff, axis=1)[:, -K_eff:]
+  [onnx-test] topk_sim = np.take_along_axis(sim, topk_idx, axis=1)
+
+--- exp040 ---
+  [hdr] - **Slot 1**: NB4 v11 (ProtoSSM + MLPHead + multi-seed=5 + KD + Retrieval + E19 + FCS + Season prior + Mirror) **+ ResidualSSM (second-pass)**
+  [config] FCS_TOP_K = 2
+  [config] FCS_POWER = 0.4
+  [load] file_labels = (lab_labels_files.sum(axis=1) > 0).astype(np.float32)
+  [load] _lab_pool_norm = np.linalg.norm(lab_pool_emb, axis=1, keepdims=True) + 1e-8
+  [load] _ta_norm = np.linalg.norm(_ta_emb_raw, axis=1, keepdims=True) + 1e-8
+  [load] _an_norm = np.linalg.norm(_an_emb, axis=1, keepdims=True) + 1e-8
+  [load] _in_norm = np.linalg.norm(_in_emb, axis=1, keepdims=True) + 1e-8
+  [onnx-test] y = y.mean(axis=1)
+  [onnx-test] scores[:, pos] = logits[:, bc_idx_arr].max(axis=1)
+  [onnx-test] e_norm = test_emb / (np.linalg.norm(test_emb, axis=1, keepdims=True) + 1e-8)
+  [onnx-test] topk_idx = np.argpartition(w_sim, -K_eff, axis=1)[:, -K_eff:]
+  [onnx-test] topk_sim = np.take_along_axis(w_sim, topk_idx, axis=1)
+  [onnx-test] topk_label = lab_pool_labels[topk_idx]
+  [onnx-test] sm = topk_sim - topk_sim.max(axis=1, keepdims=True)
+  [onnx-test] sm = sm / (sm.sum(axis=1, keepdims=True) + 1e-8)
+  [onnx-test] p = (sm[..., None] * topk_label).sum(axis=1)
+  [onnx-test] e_norm = test_emb / (np.linalg.norm(test_emb, axis=1, keepdims=True) + 1e-8)
+  [onnx-test] topk_idx = np.argpartition(sim, -K_eff, axis=1)[:, -K_eff:]
+  [onnx-test] topk_sim = np.take_along_axis(sim, topk_idx, axis=1)
+
+================================================================================
+CHECK: Aug — MixUp / Background / RandomFilter / Noise (Tasks #77, #78, #79)
+================================================================================
+
+--- exp032 R2 ---
+  [dl_data] desc="extract", smoothing=0.05, mininterval=1.0)
+  [dl_data] desc="Perch copy", mininterval=1.0)
+  [dl_data] desc="pseudo copy", mininterval=1.0)
+  [config] AUG_GAIN_DB_RANGE = (-6.0, 6.0)
+  [config] AUG_NOISE_SNR_DB_RANGE = (10.0, 30.0)
+  [config] USE_MIXUP = True
+  [config] MIXUP_PROB = 0.5
+  [config] MIXUP_ALPHA = 0.4
+  [config] MIXUP_HARD = False
+  [regen-r1-pseudo] for fp in tqdm(sc_files, desc="regen-inf", mininterval=2.0):
+  [dataset] w = w * (10 ** (np.random.uniform(*AUG_GAIN_DB_RANGE) / 20))
+  [dataset] sp / (10 ** (np.random.uniform(*AUG_NOISE_SNR_DB_RANGE) / 10)))
+  [dataset] if USE_MIXUP and self.aug and np.random.random() < MIXUP_PROB:
+  [dataset] lam = np.random.beta(MIXUP_ALPHA, MIXUP_ALPHA)
+  [dataset] lb = np.maximum(lb1, lb2) if MIXUP_HARD else (lam * lb1 + (1 - lam) * lb2)
+  [pseudo_infer] for fi, fpath in enumerate(tqdm(sc_files, desc="infer", mininterval=2.0)):
+  [pseudo_save] desc="Drive mirror", mininterval=1.0)
+
+--- exp017 ---
+  [hdr] - soft mixup (alpha=0.4)、SpecAugment
+  [dl_data] desc="extract", smoothing=0.05, mininterval=1.0)
+  [dl_data] desc="Perch copy", mininterval=1.0)
+  [config] AUG_GAIN_DB_RANGE = (-6.0, 6.0)
+  [config] AUG_NOISE_SNR_DB_RANGE = (10.0, 30.0)
+  [config] USE_MIXUP = True
+  [config] MIXUP_PROB = 0.5
+  [config] MIXUP_ALPHA = 0.4
+  [config] MIXUP_HARD = False
+  [dataset] w = w * (10 ** (np.random.uniform(*AUG_GAIN_DB_RANGE) / 20))
+  [dataset] sp / (10 ** (np.random.uniform(*AUG_NOISE_SNR_DB_RANGE) / 10)))
+  [dataset] if USE_MIXUP and self.aug and np.random.random() < MIXUP_PROB:
+  [dataset] lam = np.random.beta(MIXUP_ALPHA, MIXUP_ALPHA)
+  [dataset] lb = np.maximum(lb1, lb2) if MIXUP_HARD else (lam * lb1 + (1 - lam) * lb2)
+
+--- exp020 R2 5-fold ---
+  [dl_data] desc="extract", mininterval=1.0)
+  [config] AUG_GAIN_DB_RANGE = (-6.0, 6.0)
+  [config] AUG_NOISE_SNR_DB_RANGE = (10.0, 30.0)
+  [config] USE_MIXUP = True
+  [config] MIXUP_PROB = 0.5
+  [config] MIXUP_ALPHA = 0.4
+  [config] MIXUP_HARD = False
+  [dataset] w = w * (10 ** (np.random.uniform(*AUG_GAIN_DB_RANGE) / 20))
+  [dataset] sp / (10 ** (np.random.uniform(*AUG_NOISE_SNR_DB_RANGE) / 10)))
+  [dataset] if USE_MIXUP and self.aug and np.random.random() < MIXUP_PROB:
+  [dataset] lam = np.random.beta(MIXUP_ALPHA, MIXUP_ALPHA)
+  [dataset] lb = np.maximum(lb1, lb2) if MIXUP_HARD else (lam * lb1 + (1 - lam) * lb2)
+
+--- exp029 R3 ---
+  [dl_data] desc="extract", mininterval=1.0)
+  [config] AUG_GAIN_DB_RANGE = (-6.0, 6.0)
+  [config] AUG_NOISE_SNR_DB_RANGE = (10.0, 30.0)
+  [config] USE_MIXUP = True
+  [config] MIXUP_PROB = 0.5
+  [config] MIXUP_ALPHA = 0.4
+  [config] MIXUP_HARD = False
+  [dataset] w = w * (10 ** (np.random.uniform(*AUG_GAIN_DB_RANGE) / 20))
+  [dataset] sp / (10 ** (np.random.uniform(*AUG_NOISE_SNR_DB_RANGE) / 10)))
+  [dataset] if USE_MIXUP and self.aug and np.random.random() < MIXUP_PROB:
+  [dataset] lam = np.random.beta(MIXUP_ALPHA, MIXUP_ALPHA)
+  [dataset] lb = np.maximum(lb1, lb2) if MIXUP_HARD else (lam * lb1 + (1 - lam) * lb2)
+
+================================================================================
+CHECK: XC pretrain (Task #80)
+================================================================================
+
+--- exp032 R2 ---
+  [hdr] **Round 2 of Multi-Iterative Noisy Student** (Babych BC2025 1位レシピ準拠)。
+  [model] Path("/content/drive/MyDrive/kaggle/birdclef2026/external/birdclef2025-1st-place-ensemble"),
+
+--- exp017 ---
+
+--- exp020 R2 5-fold ---
+
+--- exp029 R3 ---
+
+================================================================================
+CHECK: Pseudo label (Task #81) — filter / sampling / soft target
+================================================================================
+
+--- exp020 R2 5-fold ---
+  [hdr] **前提**: `nb_train_r1_5fold.ipynb` 完走済、Drive に R1 ckpt + R1 pseudo CSV あり。
+  [hdr] - R1 pseudo from Drive (`output/exp020/fold{k}/r1-pseudo/pseudo_labels.csv`)
+  [hdr] - R2 pseudo gen は skip
+  [config] warnings.filterwarnings("ignore")
+  [config] AUG_PROB = 0.5
+  [config] MIXUP_PROB = 0.5
+  [config] SHARES_R2 = {"focal": 0.70, "labeled_sc": 0.10, "pseudo_sc": 0.20}
+  [config] SOURCE_WEIGHTS = {"focal": 1.0, "focal_missing": 0.0, "labeled_sc": 1.0, "pseudo_sc": 0.5}
+  [config] print(f"Sources: {SHARES_R2}")
+  [model] nn.Dropout(0.5),
+  [dataset] class PseudoScDS(Dataset):
+  [dataset] torch.ones(NUM_CLASSES), torch.ones(NUM_CLASSES), "pseudo_sc")
+  [dataset] def __init__(self, sizes, names, shares, bs, nst, seed=0):
+  [dataset] per_src = [max(1, int(round(bs * shares.get(n, 0.0)))) for n in names]
+  [eval] p_blend = 0.5 * p_clip + 0.5 * p_fmax
+  [train_r2] def train_r2(fold_k, pseudo_meta_df, Y_pseudo, out_dir):
+  [train_r2] pds = PseudoScDS(pseudo_meta_df, Y_pseudo, TS_DIR, aug=True)
+  [train_r2] items.append(("pseudo_sc", pds, len(pds)))
+  [train_r2] smp = MixSamp(SIZES, NAMES, SHARES_R2, BATCH, n_steps_ep, seed=42 + epoch)
+  [train_r2] bce = 0.5 * bce_clip + 0.5 * bce_frame
+  [fold_loop] DRIVE_R1_PSEUDO = DRIVE_FOLD_DIR / "r1-pseudo" / "pseudo_labels.csv"
+  [fold_loop] if not DRIVE_R1_PSEUDO.exists():
+  [fold_loop] print(f"  [SKIP] R1 pseudo missing: {DRIVE_R1_PSEUDO}")
+  [fold_loop] print(f"  Run nb_train_r1_5fold.ipynb first to generate R1 pseudo")
+  [fold_loop] fold_results[FOLD_K] = {"status": "skipped (no R1 pseudo)"}
+  [fold_loop] print(f"  Loading R1 pseudo: {DRIVE_R1_PSEUDO}")
+  [fold_loop] pseudo_df_r1 = pd.read_csv(DRIVE_R1_PSEUDO)
+  [fold_loop] print(f"    {len(pseudo_df_r1)} rows")
+  [fold_loop] Y_PSEUDO = pseudo_df_r1[PRIMARY_LABELS].values.astype(np.float32)
+  [fold_loop] pseudo_meta = pseudo_df_r1[["filename", "start_sec"]].copy().reset_index(drop=True)
+
+--- exp029 R3 ---
+  [hdr] **前提**: `nb_train_r1_5fold.ipynb` 完走済、Drive に R1 ckpt + R1 pseudo CSV あり。
+  [hdr] - Teacher pseudo from Drive (`kaggle/birdclef2026/pseudo_e17.csv`、exp028 で生成済)
+  [hdr] - R2 pseudo gen は skip
+  [dl_data] TEACHER_PSEUDO_DRIVE = DRIVE_INPUT_DIR / "pseudo_e17.csv"
+  [dl_data] if not TEACHER_PSEUDO_DRIVE.exists():
+  [dl_data] print(f"\nDownloading teacher pseudo (pseudo_e17.csv) from Kaggle NB output...")
+  [dl_data] TEACHER_PSEUDO_TMP = LOCAL_DATA / "pseudo_e17_kaggle"
+  [dl_data] TEACHER_PSEUDO_TMP.mkdir(parents=True, exist_ok=True)
+  [dl_data] api.kernels_output_download_file("maekeso/birdclef2026-exp028-pseudo-e17",
+  [dl_data] file_name="pseudo_e17.csv",
+  [dl_data] path=str(TEACHER_PSEUDO_TMP))
+  [dl_data] src = TEACHER_PSEUDO_TMP / "pseudo_e17.csv"
+  [dl_data] shutil.copy2(str(src), str(TEACHER_PSEUDO_DRIVE))
+  [dl_data] print(f"  DL done in {(time.time()-t0)/60:.1f} min, saved to {TEACHER_PSEUDO_DRIVE}")
+  [dl_data] api.kernels_output("maekeso/birdclef2026-exp028-pseudo-e17",
+  [dl_data] path=str(TEACHER_PSEUDO_TMP), force=True)
+  [dl_data] src = next(TEACHER_PSEUDO_TMP.rglob("pseudo_e17.csv"), None)
+  [dl_data] assert src is not None, "pseudo_e17.csv not found in NB output"
+  [dl_data] shutil.copy2(str(src), str(TEACHER_PSEUDO_DRIVE))
+  [dl_data] print(f"  pseudo_e17.csv: {TEACHER_PSEUDO_DRIVE.stat().st_size/1e6:.1f}MB")
+  [config] warnings.filterwarnings("ignore")
+  [config] AUG_PROB = 0.5
+  [config] MIXUP_PROB = 0.5
+  [config] SHARES_R2 = {"focal": 0.65, "labeled_sc": 0.10, "pseudo_sc": 0.25}   # ★ exp029 Option C: pseudo 0.20 → 0.25、distill 強化
+  [config] SOURCE_WEIGHTS = {"focal": 1.0, "focal_missing": 0.0, "labeled_sc": 1.0, "pseudo_sc": 0.5}
+  [config] print(f"Sources: {SHARES_R2}")
+  [model] nn.Dropout(0.5),
+  [dataset] class PseudoScDS(Dataset):
+  [dataset] torch.ones(NUM_CLASSES), torch.ones(NUM_CLASSES), "pseudo_sc")
+  [dataset] def __init__(self, sizes, names, shares, bs, nst, seed=0):

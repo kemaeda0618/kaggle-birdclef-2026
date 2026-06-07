@@ -1,0 +1,16 @@
+"""Manual upload via Drive. This is for ref."""
+from pathlib import Path
+NB = Path(__file__).with_name("nb_train.ipynb")
+print(f"NB local: {NB}")
+print(f"Size: {NB.stat().st_size/1024:.1f} KB")
+print()
+print("=== Manual Colab upload ===")
+print("1. Upload to Drive: /content/drive/MyDrive/kaggle/birdclef2026/notebooks/exp066/")
+print(f"   File: {NB.name}")
+print("2. Open in Colab → Runtime = Blackwell")
+print("3. Run all cells")
+print("\n=== Expected time ===")
+print("  DL data: 5-10 min")
+print("  Perch embed pre-compute: 30-60 min (GPU ONNX)")
+print("  Training 25 ep: 4-5h")
+print("  Total: ~5-6h")

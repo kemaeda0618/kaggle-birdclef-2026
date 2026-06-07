@@ -1,0 +1,138 @@
+# =================================================================
+# S1 -- IMPORTS + CONFIG
+# =================================================================
+import os, sys, time, json, pickle, gc, random, math
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from collections import defaultdict
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.cuda.amp import GradScaler, autocast
+import torchaudio
+import timm
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
+from scipy.special import expit as sigmoid_np
+import warnings
+warnings.filterwarnings("ignore")
+
+SEED = 42
+random.seed(SEED)
+os.environ["PYTHONHASHSEED"] = str(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = True
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Device: {device}")
+if torch.cuda.is_available(): print(f"GPU: {torch.cuda.get_device_name()}")
+
+# ------------------------------------------------------------------
+# Notebook Mode
+# -----------------------------------------------------------------
+MODE = "infer"  # "train" or "infer"
+
+if MODE == 'train':    #Kaggle struggles with full training pipeline
+    DEBUG = True     
+else:
+    DEBUG = False
+
+# ------------------------------------------------------------------
+# Paths -- Kaggle dataset layout
+# -----------------------------------------------------------------
+COMP_DIR = Path("/kaggle/input/competitions/birdclef-2026")
+WAVEFORM_CACHE_DIR = Path("/kaggle/input/datasets/tuckerarrants/birdclef-2026-waveform-cache/waveform_cache")
+PERCH_ONNX_PATH = Path("/kaggle/input/datasets/tuckerarrants/perch-v2-no-dft-onnx/perch_v2_no_dft.onnx")
+
+LABELS_PATH     = COMP_DIR / "train_soundscapes_labels.csv"
+TAXONOMY_PATH   = COMP_DIR / "taxonomy.csv"
+SAMPLE_SUB_PATH = COMP_DIR / "sample_submission.csv"
+TEST_DIR        = COMP_DIR / "test_soundscapes"
+
+OUT_DIR = Path("/kaggle/working")
+
+NUM_CLASSES = 234
+SR = 32000
+
+# --- Duration ---
+TRAIN_DURATION = 5    # seconds
+VAL_DURATION   = 5    # always 5s for competition eval
+TRAIN_SAMPLES  = SR * TRAIN_DURATION
+VAL_SAMPLES    = SR * VAL_DURATION
+
+N_FOLDS = 5
+
+# --- Mel spectrogram ---
+N_FFT      = 2048
+HOP_LENGTH = 512
+N_MELS     = 256
+FMIN       = 20
+FMAX       = 16000
+
+# --- Model ---
+BACKBONE_NAME = "tf_efficientnet_b0.ns_jft_in1k"  
+
+# --- Perch distillation ---
+USE_PERCH_DISTILL = True
+PERCH_EMBED_DIM   = 1536
+ALPHA_DISTILL     = 1.0   # MSE loss weight
+
+# --- Training ---
+FOLDS  = [0, 1, 2, 3, 4]
+EPOCHS = 25
+BATCH  = 16 if DEBUG else 64        # used 64 locally, 16 for Kaggle
+LR     = 5e-4
+MIN_LR = 1e-5
+WD     = 1e-4
+WARMUP_EPOCHS = 2
+
+# --- Upsampling ---
+MIN_SAMPLE = 20
+
+# --- Augmentation ---
+AUG_PROB = 0.5
+AUG_GAIN_DB_RANGE      = (-6.0, 6.0)
+AUG_NOISE_SNR_DB_RANGE = (10.0, 30.0)
+
+# --- MixUp ---
+USE_FOCAL_MIXUP    = True
+MIXUP_PROB         = 0.5
+MIXUP_ALPHA        = 0.4
+MIXUP_HARD         = True    # union labels (hard) vs weighted blend (soft)
+
+USE_FOCAL_SC_MIXUP     = True
+FOCAL_SC_MIXUP_PROB    = 0.5
+FOCAL_SC_MIXUP_ALPHA   = 0.4
+
+# --- FreqMixStyle (disabled by default) ---
+FREQ_MIXSTYLE_PROB  = 0.0
+FREQ_MIXSTYLE_ALPHA = 0.1
+
+# --- SpecAugment ---
+FREQ_MASK_PARAM = 10
+TIME_MASK_PARAM = 10
+NUM_FREQ_MASKS  = 1
+NUM_TIME_MASKS  = 2
+
+# --- Source weights ---
+USE_FOCAL           = True
+USE_FOCAL_SECONDARY = True
+USE_LABELED_SC      = True
+
+ACTIVE_SOURCES = ["focal", "sc"]
+SHARES = {"focal": 0.9, "sc": 0.1}
+SOURCE_WEIGHTS = {
+    "focal":         1.0,
+    "focal_missing": 0.0,
+    "sc":            1.0,
+}
+
+print(f"Backbone: {BACKBONE_NAME}")
+print(f"Train duration: {TRAIN_DURATION}s | Mel: {N_MELS} mels, n_fft={N_FFT}, hop={HOP_LENGTH}")
+print(f"Distillation: {'ON' if USE_PERCH_DISTILL else 'OFF'} (alpha={ALPHA_DISTILL})")
+print(f"Batch: {BATCH} | Epochs: {EPOCHS} | Folds: {FOLDS}")

@@ -1,0 +1,259 @@
+exp078 cell count: 30
+exp085 cell count: 31
+exp078 ids: {'v313_07', 'v313_20', 'v313_23', 'v313_21', 'exp037_full_pipeline', 'v313_04', 'v313_19', 'bridge', 'v313_17', 'sed-infer', 'v313_15', 'v313_14', 'v313_03', 'hdr', 'v313_16', 'v313_05', 'v313_06', 'v313_11', 'v313_01', 'v313_08', 'v313_00', 'e29-infer', 'v313_09', 'v313_13', 'v313_12', 'v313_18', 'blend', 'v313_02', 'v313_10', 'v313_22'}
+exp085 ids: {'v313_07', 'v313_20', 'v313_23', 'v313_21', 'exp037_full_pipeline', 'v313_04', 'v313_19', 'bridge', 'v313_17', 'sed-infer', 'v313_15', 'v313_14', 'v313_03', 'hdr', 'v313_16', 'v313_05', 'v313_06', 'v313_11', 'e015-infer', 'v313_01', 'v313_08', 'v313_00', 'e29-infer', 'v313_09', 'v313_13', 'v313_12', 'v313_18', 'blend', 'v313_02', 'v313_10', 'v313_22'}
+
+Only in exp085 (NEW): {'e015-infer'}
+Only in exp078 (REMOVED): set()
+
+=== Per-cell diff ===
+Identical cells: 27/30
+Differing cells: 3
+
+--- DIFF in cell 'blend' (78: 4334 chars, 85: 3882 chars) ---
+--- exp078/blend
++++ exp085/blend
+@@ -1,39 +1,33 @@
+-# === Stage C: 3-way rank blend (NB4 + Tucker + exp029) + Sonotype mirror + submission ===
+-# exp031 ratio config (w35-40-25, slot3 = exp029 instead of e17):
+-BLEND_W_E10  = 0.35   # NB4 v7 weight
+-BLEND_W_SED  = 0.40   # Tucker public SED weight
+-BLEND_W_E17  = 0.25   # exp029 R3 (eca_nfnet_l1) weight — note var name kept "E17" for code reuse
+-USE_SED_PRE_AVG = False
++# === Stage D: 4-way rank blend (exp037 + Tucker + exp029 + exp015) + Sonotype mirror + submission ===
++# ★ exp085: 4-way blend (was 3-way in exp078).
++# Weight allocation (sum = 1.00):
++#   exp037 v313 (LightProtoSSM):  0.30  (was 0.35 in exp078)
++#   Tucker SED 5-fold (effv2_b0):  0.35  (was 0.40)
++#   exp029 R3 (eca_nfnet_l1):       0.20  (was 0.25)
++#   exp015 R2 (convnext_pico):     0.15  ★ NEW
++BLEND_W_E10  = 0.30   # exp037 weight
++BLEND_W_SED  = 0.35   # Tucker public SED weight
++BLEND_W_E17  = 0.20   # exp029 R3 (eca_nfnet_l1) weight
++BLEND_W_E015 = 0.15   # ★ exp015 R2 (convnext_pico) weight
++USE_SED_PRE_AVG = False  # 4-way pure rank blend (no pre-avg)
+ 
+-assert abs(BLEND_W_E10 + BLEND_W_SED + BLEND_W_E17 - 1.0) < 1e-6, \
++assert abs(BLEND_W_E10 + BLEND_W_SED + BLEND_W_E17 + BLEND_W_E015 - 1.0) < 1e-6, \
+     "blend weights must sum to 1.0"
+ 
+-flat_e10 = probs_exp010.reshape(-1, probs_exp010.shape[-1])
+-flat_sed = probs_sed.reshape(-1, probs_sed.shape[-1])
+-flat_e17 = probs_e17.reshape(-1, probs_e17.shape[-1])  # ← actually exp029
++flat_e10  = probs_exp010.reshape(-1, probs_exp010.shape[-1])
++flat_sed  = probs_sed.reshape(-1, probs_sed.shape[-1])
++flat_e17  = probs_e17.reshape(-1, probs_e17.shape[-1])    # ← actually exp029
++flat_e015 = probs_e015.reshape(-1, probs_e015.shape[-1])  # ← ★ exp015 R2
+ 
+-if USE_SED_PRE_AVG:
+-    _eps = 1e-7
+-    _l_sed = np.log(np.clip(flat_sed, _eps, 1 - _eps)) - np.log1p(-np.clip(flat_sed, _eps, 1 - _eps))
+-    _l_e17 = np.log(np.clip(flat_e17, _eps, 1 - _eps)) - np.log1p(-np.clip(flat_e17, _eps, 1 - _eps))
+-    _w_sed = BLEND_W_SED / (BLEND_W_SED + BLEND_W_E17)
+-    _w_e17 = BLEND_W_E17 / (BLEND_W_SED + BLEND_W_E17)
+-    _l_sed_avg = _w_sed * _l_sed + _w_e17 * _l_e17
+-    flat_sed_combined = (1.0 / (1.0 + np.exp(-np.clip(_l_sed_avg, -50, 50)))).astype(np.float32)
+-    rank_e10 = pd.DataFrame(flat_e10).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+-    rank_sed = pd.DataFrame(flat_sed_combined).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+-    _w_nb4 = BLEND_W_E10
+-    _w_sed_total = BLEND_W_SED + BLEND_W_E17
+-    blend_flat = _w_nb4 * rank_e10 + _w_sed_total * rank_sed
+-    print(f"  SED-pre-avg mode: NB4={_w_nb4:.2f} / (Tucker+e29)={_w_sed_total:.2f} "
+-          f"(Tucker:e29 internal = {_w_sed:.2f}:{_w_e17:.2f})")
+-else:
+-    rank_e10 = pd.DataFrame(flat_e10).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+-    rank_sed = pd.DataFrame(flat_sed).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+-    rank_e17 = pd.DataFrame(flat_e17).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+-    blend_flat = (BLEND_W_E10 * rank_e10
+-                  + BLEND_W_SED * rank_sed
+-                  + BLEND_W_E17 * rank_e17)
+-    print(f"  3-way rank blend: NB4={BLEND_W_E10} / Tucker={BLEND_W_SED} / e29={BLEND_W_E17}")
++rank_e10  = pd.DataFrame(flat_e10).rank(axis=0, pct=True).to_numpy().astype(np.float32)
++rank_sed  = pd.DataFrame(flat_sed).rank(axis=0, pct=True).to_numpy().astype(np.float32)
++rank_e17  = pd.DataFrame(flat_e17).rank(axis=0, pct=True).to_numpy().astype(np.float32)
++rank_e015 = pd.DataFrame(flat_e015).rank(axis=0, pct=True).to_numpy().astype(np.float32)
++
++blend_flat = (BLEND_W_E10  * rank_e10
++              + BLEND_W_SED  * rank_sed
++              + BLEND_W_E17  * rank_e17
++              + BLEND_W_E015 * rank_e015)
++print(f"  4-way rank blend: exp037={BLEND_W_E10} / Tucker={BLEND_W_SED} / e29={BLEND_W_E17} / e015={BLEND_W_E015}")
+ 
+ # === Sonotype mirror (公開 0.946 NB Cell 40) ===
+
+--- DIFF in cell 'hdr' (78: 859 chars, 85: 1866 chars) ---
+--- exp078/hdr
++++ exp085/hdr
+@@ -1,20 +1,43 @@
+-# exp039 — exp037 + Tucker SED + exp029 single-NB blend (NB4 replaced)
++# exp085 — 4-way blend (exp078 base + exp015 R2 OV)
+ 
+-NB4 を **exp037 (LightProtoSSM + MLP probes + ResSSM in-NB train)** に置換した 3-way rank blend.
+-全推論 1 NB で完結 (no kernel_source for exp037 output).
++**exp078 (LB 0.950) を base に exp015 R2 (convnext_pico OV) を 4th stream として追加**
+ 
+-## Architecture
+-| Slot | Model | Weight |
+-|---|---|---|
+-| 1 | **exp037 (LightProtoSSM + MLP probes + ResSSM)** | **0.35** |
+-| 2 | Tucker SED (5-fold ONNX) | 0.40 |
+-| 3 | exp029 R3 (NFNet l1 single fold) | 0.25 |
++## Stack
++
++| # | Model | 単 LB | Weight |
++|---|---|---|---|
++| 1 | **exp037 v313** (LightProtoSSM + MLP probes + ResSSM) | 0.930 | **0.30** |
++| 2 | **Tucker SED 5-fold** ONNX (effv2_b0, public) | 0.937 | **0.35** |
++| 3 | **exp029 R3** (eca_nfnet_l1) | 0.923 | **0.20** |
++| 4 | **exp015 R2 OV** (convnext_pico) ★ NEW | 0.910 | **0.15** |
++
++**Weight sum = 1.00**
+ 
+ ## Expected
+-- LB **0.951-0.954** (exp031 0.949 baseline + standalone +0.012 → blend +0.002-0.005)
+-- Run time **55-65 min** on Kaggle CPU (exp037 30 min + Tucker 15-20 + exp029 8-12 + audio reload 5-8)
++- LB **0.951-0.955** (exp078 baseline 0.950 から +0.001-0.005)
++- Run time **~70-80 min** on Kaggle CPU
++  - exp037 ~30 min + Tucker SED ~15-20 min + exp029 R3 ~8-12 min + **exp015 OV ~3-5 min** + audio reload ~5-8 min
+ 
+-## NB4 → exp037 swap rationale
+-- exp037 v313 standalone LB **0.930** vs NB4 standalone ~0.918-0.924 = +0.006-0.012
+-- Removed deps: anura/inat pool、exp010-nb1-embedding kernel_source
+-- Kept deps: Perch ONNX、Tucker SED、exp029 ckpt
++## Backbone diversity (5 families! ※ Tucker SED の effv2_b0 含む)
++- LightProtoSSM (Perch probe, exp037)
++- EfficientNet v2 b0 (Tucker SED)
++- NFNet (eca_nfnet_l1, exp029 R3)
++- ConvNeXt (convnext_pico, exp015) ★ NEW
++
++## Pipeline
++1. Cell 0-25: Train exp037 v313 in-NB (Perch v2 emb → LightProtoSSM + MLP probes + ResidualSSM)
++2. Cell `bridge`: Build audio_cache from test files (60s raw per file)
++3. Cell `sed-infer`: Tucker SED 5-fold inference (sigmoid + smooth)
++4. Cell `e29-infer`: exp029 R3 PyTorch inference (sigmoid + smooth)
++5. Cell `e015-infer`: ★ exp015 R2 OV inference (sigmoid + smooth)
++6. Cell `blend`: 4-way **rank blend** + Sonotype mirror + submission
++
++## Inputs (Dataset attachments)
++- `birdclef-2026` (competition)
++- `tuckerarrants/perch-v2-no-dft-onnx`
++- `tuckerarrants/bc2026-distilled-sed-public` (Tucker SED 5-fold ONNX)
++- `cooolz/openvino-package` ★ NEW (OV wheel offline install)
++- `maekeso/birdclef2026-exp029-l1-single` (exp029 R3 ckpt)
++- `maekeso/birdclef2026-exp015-weights` ★ NEW (exp015 R2 OV IR via r2_ov/)
++- `rishikeshjani/perch-onnx-for-birdclef-2026` (ONNX runtime wheel)
++- `rishikeshjani/tensorflow-2-20-0-wheel-cp312`
+
+--- DIFF in cell 'v313_00' (78: 1186 chars, 85: 2096 chars) ---
+--- exp078/v313_00
++++ exp085/v313_00
+@@ -1,3 +1,3 @@
+-# ── Cell 0: Install ONNX Runtime + TF 2.20 ────────────────────────────
++# ── Cell 0: Install ONNX Runtime + TF 2.20 + OpenVINO (offline wheels) ─────
+ import subprocess, sys, os
+ from pathlib import Path
+@@ -22,4 +22,20 @@
+ print("TF 2.20 installed")
+ 
++# ★ exp085: install OpenVINO from cooolz/openvino-package wheel dataset (offline)
++import glob as _glob_ov
++OV_WHEEL_DIR = None
++for _p in [Path("/kaggle/input/datasets/cooolz/openvino-package"),
++           Path("/kaggle/input/openvino-package")]:
++    if _p.exists():
++        OV_WHEEL_DIR = _p; break
++assert OV_WHEEL_DIR is not None, "openvino wheel dataset not attached (cooolz/openvino-package)"
++_ov_whl  = _glob_ov.glob(str(OV_WHEEL_DIR / "openvino-*.whl"))
++_tel_whl = _glob_ov.glob(str(OV_WHEEL_DIR / "openvino_telemetry-*.whl"))
++assert _ov_whl and _tel_whl, f"openvino wheels not found in {OV_WHEEL_DIR}"
++# --no-deps to avoid numpy upgrade (which breaks scipy)
++subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-index", "--no-deps",
++                *_ov_whl, *_tel_whl], check=True)
++print("OpenVINO installed")
++
+ try:
+     import onnxruntime as ort
+@@ -29,2 +45,5 @@
+     _ONNX_AVAILABLE = False
+     print("ONNX not available, falling back to TF")
++
++import openvino as ov
++print(f"OpenVINO available ✅ ({ov.__version__})")
+
+=== NEW cells (only in exp085) ===
+
+--- NEW cell 'e015-infer' (3428 chars) ---
+# === exp015 R2 OV (convnext_pico + Tucker mel) inference ===
+# 4th stream for exp085. Reuses audio_cache (60s raw per file) and _E17MelTF (Tucker mel).
+# Output probs_e015 of shape (N_files, 12, N_CLASSES), sigmoid space + gaussian smoothed.
+import openvino as ov
+
+# ---- Locate exp015 R2 OV IR (Dataset 経由) ----
+E015_OV_PATH = None
+for _root in [
+    Path("/kaggle/input/datasets/maekeso/birdclef2026-exp015-weights"),
+    Path("/kaggle/input/birdclef2026-exp015-weights"),
+]:
+    if _root.exists():
+        _cand = _root / "r2_ov" / "model.xml"
+        if _cand.exists():
+            E015_OV_PATH = _cand; break
+        # rglob fallback
+        for _hit in _root.rglob("r2_ov/model.xml"):
+            E015_OV_PATH = _hit; break
+        if E015_OV_PATH: break
+
+assert E015_OV_PATH is not None, "exp015 R2 OV IR (r2_ov/model.xml) not found"
+print(f"exp015 OV: {E015_OV_PATH}")
+
+# ---- Load OV model ----
+_e015_core = ov.Core()
+_e015_ov_model = _e015_core.read_model(str(E015_OV_PATH))
+_e015_compiled = _e015_core.compile_model(_e015_ov_model, "CPU")
+_e015_input_port = _e015_compiled.input(0)
+print(f"  exp015 OV compiled, input shape={_e015_compiled.input(0).partial_shape}")
+
+# Reuse _E17MelTF (Tucker mel: n_mels=256, hop=512, n_fft=2048) — same as exp015 training
+# Already defined in e29-infer cell
+e015_mel_tf = _E17MelTF().to(torch.device("cpu"))
+
+def _identify_ov_outputs(result_dict):
+    """Identify clip_logits (2D) and framewise (3D) by ndim — robust to missing names."""
+    arrays = list(result_dict.values())
+    clip_logits, framewise = None, None
+    for arr in arrays:
+        if arr.ndim == 2:
+            clip_logits = arr
+        elif arr.ndim == 3:
+            framewise = arr
+    assert clip_logits is not None and framewise is not None, \
+        f"OV output shape mismatch: {[a.shape for a in arrays]}"
+    return clip_logits, framewise
+
+# ---- Inference using audio_cache (60s raw per file) ----
+t0 = time.time()
+probs_e015 = []   # (N_files, 12, N_CLASSES)
+with torch.no_grad():
+    for _fi, _raw_60s in enumerate(audio_cache):
+        _chunks = _raw_60s.reshape(N_WINDOWS, WINDOW_SAMPLES).astype(np.float32)
+        _wav_t = torch.from_numpy(_chunks).unsqueeze(1)        # (12, 1, 160000)
+        _mel = e015_mel_tf(_wav_t)
+        for _i in range(_mel.size(0)):
+            _mel[_i] = (_mel[_i] - _mel[_i].mean()) / (_mel[_i].std() + 1e-6)
+        _mel_np = _mel.numpy().astype(np.float32)              # (12, 1, 256, 313)
+        _result = _e015_compiled.create_infer_request().infer({_e015_input_port: _mel_np})
+        _clip_logits, _framewise = _identify_ov_outputs(_result)
+        # framewise shape: (B, time, num_class) — max over time axis 1
+        _frame_max = _framewise.max(axis=1)
+        # sigmoid space blend (mirrors Tucker/e29 recipe: 0.5*sig(clip) + 0.5*sig(frame_max))
+        _p_clip   = sigmoid_sed(_clip_logits).astype(np.float32)
+        _p_frame  = sigmoid_sed(_frame_max).astype(np.float32)
+        _p_mean   = 0.5 * _p_clip + 0.5 * _p_frame             # (12, N_CLASSES)
+        _p_smooth = gaussian_filter1d(_p_mean, sigma=0.65, axis=0, mode="nearest").astype(np.float32)
+        probs_e015.append(_p_smooth)
+        if (_fi + 1) % 10 == 0 or _fi == len(audio_cache) - 1:
+            print(f"  e015 [{_fi+1}/{len(audio_cache)}] {time.time()-t0:.0f}s")
+
+probs_e015 = np.stack(probs_e015).astype(np.float32)
+print(f"e015 done: {probs_e015.shape} in {time.time()-t0:.0f}s")
+

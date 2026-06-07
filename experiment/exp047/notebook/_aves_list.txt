@@ -1,0 +1,4 @@
+  File "<string>", line 6
+    print(f'First 5: {aves[[\
+                           ^
+SyntaxError: '[' was never closed

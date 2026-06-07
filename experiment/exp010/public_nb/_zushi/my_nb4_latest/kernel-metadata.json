@@ -1,0 +1,27 @@
+{
+  "id": "maekeso/birdclef2026-exp010-nb4-blend-protossm-mlp",
+  "id_no": 117275061,
+  "title": "birdclef2026-exp010-nb4-blend-protossm-mlp",
+  "code_file": "birdclef2026-exp010-nb4-blend-protossm-mlp.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [],
+  "dataset_sources": [
+    "maekeso/birdclef2026-perch-embed-anura",
+    "maekeso/birdclef2026-perch-embed-inat-nonbird",
+    "rishikeshjani/perch-onnx-for-birdclef-2026"
+  ],
+  "kernel_sources": [
+    "maekeso/birdclef2026-exp010-nb1-embedding"
+  ],
+  "competition_sources": [
+    "birdclef-2026"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-images/python@sha256:c370a5ff133d162d17c2dca332b50f3e85c0b0ed1471ee18e98e3009eee80b08",
+  "machine_shape": "None"
+}

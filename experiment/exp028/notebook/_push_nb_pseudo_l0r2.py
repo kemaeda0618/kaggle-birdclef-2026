@@ -1,7 +1,10 @@
-"""Push exp028 nb_pseudo_l0r2.ipynb to Kaggle (GPU T4, internet OFF).
+"""Push exp028 nb_pseudo_l0r2.ipynb to Kaggle (CPU, internet OFF).
 
 l0 R2 5-fold ensemble の train_soundscapes 予測を生成、pseudo_l0r2.csv として保存。
 Multi-teacher R3 pseudo の teacher 1。
+
+Note: 修正 push (slug は `pseudo-eca-nfnet-l0-r2` 新 slug、CPU 実行)。
+旧 slug の Kaggle NB 上のコードが誤って e17 のものになっていた bug 修正。
 
 Inputs:
 - birdclef-2026 (competition、train_soundscapes ~10,658 files)
@@ -27,8 +30,8 @@ api = KaggleApi(); api.authenticate()
 
 NB    = Path(__file__).with_name("nb_pseudo_l0r2.ipynb")
 USER  = "maekeso"
-SLUG  = "birdclef2026-exp028-pseudo-l0r2"
-TITLE = "birdclef2026 exp028 pseudo l0r2"
+SLUG  = "birdclef2026-exp028-pseudo-eca-nfnet-l0-r2"
+TITLE = "birdclef2026 exp028 pseudo eca nfnet l0 r2"
 
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
@@ -40,7 +43,7 @@ with tempfile.TemporaryDirectory() as td:
         "language": "python",
         "kernel_type": "notebook",
         "is_private": True,
-        # ★ Kaggle T4 GPU (NvidiaTeslaT4 = T4x2)、internet=False で 12h 制限
+        # ★ Kaggle T4 GPU (NvidiaTeslaT4 = T4x2)、5-fold ensemble inference ~2.5h
         "machine_shape": "NvidiaTeslaT4",
         "enable_internet": False,
         "competition_sources": ["birdclef-2026"],

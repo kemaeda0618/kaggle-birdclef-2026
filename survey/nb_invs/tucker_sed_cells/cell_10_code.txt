@@ -1,0 +1,191 @@
+# =================================================================
+# S3 -- EVAL UTILITIES + MEL TRANSFORM + SED MODELS
+# =================================================================
+
+def compute_macro_auc(y_true, y_pred, mask=None, class_mask=None):
+    """Macro-averaged AUC across evaluable species."""
+    if mask is not None:
+        y_true, y_pred = y_true[mask], y_pred[mask]
+    if class_mask is not None:
+        y_true, y_pred = y_true[:, class_mask], y_pred[:, class_mask]
+    aucs = []
+    for c in range(y_true.shape[1]):
+        col = y_true[:, c]
+        if col.sum() == 0 or col.sum() == len(col):
+            continue
+        try:
+            aucs.append(roc_auc_score(col, y_pred[:, c]))
+        except ValueError:
+            continue
+    return (np.mean(aucs) if aucs else float("nan")), len(aucs)
+
+def full_eval(y_true, y_pred, ns22, tm):
+    r = {}
+    a, n = compute_macro_auc(y_true, y_pred)
+    r["macro_auc_all"], r["n_all"] = round(a, 4), n
+    a, n = compute_macro_auc(y_true, y_pred, mask=ns22)
+    r["non_s22_macro"], r["n_ns22"] = round(a, 4), n
+    for t, cm in tm.items():
+        a, n = compute_macro_auc(y_true, y_pred, mask=ns22, class_mask=cm)
+        r[f"non_s22_{t}"] = round(a, 4)
+    return r
+
+# ------------------------------------------------------------------
+# GPU Mel Spectrogram
+# ------------------------------------------------------------------
+class MelSpecTransform(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mel_spec = torchaudio.transforms.MelSpectrogram(
+            sample_rate=SR, n_fft=N_FFT, hop_length=HOP_LENGTH,
+            n_mels=N_MELS, f_min=FMIN, f_max=FMAX, power=2.0,
+        )
+        self.db_transform = torchaudio.transforms.AmplitudeToDB(top_db=80)
+
+    def forward(self, waveform):
+        return self.db_transform(self.mel_spec(waveform))
+
+# ------------------------------------------------------------------
+# GPU SpecAugment
+# ------------------------------------------------------------------
+class SpecAugment(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.freq_mask = torchaudio.transforms.FrequencyMasking(freq_mask_param=FREQ_MASK_PARAM)
+        self.time_mask = torchaudio.transforms.TimeMasking(time_mask_param=TIME_MASK_PARAM)
+
+    def forward(self, mel):
+        for _ in range(NUM_FREQ_MASKS):
+            mel = self.freq_mask(mel)
+        for _ in range(NUM_TIME_MASKS):
+            mel = self.time_mask(mel)
+        return mel
+
+# ------------------------------------------------------------------
+# Frozen Perch teacher -- ONNX inference, no gradients
+# ------------------------------------------------------------------
+import onnxruntime as ort
+
+class PerchTeacher:
+    """Frozen Perch v2 via ONNX. Takes 5s waveforms, returns 1536-d embeddings.
+    The teacher is never updated -- it provides a stable distillation target."""
+
+    def __init__(self, onnx_path, device_str="cuda"):
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] \
+            if device_str == "cuda" else ["CPUExecutionProvider"]
+        self.session = ort.InferenceSession(str(onnx_path), providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+        self._out_names = [o.name for o in self.session.get_outputs()]
+        self._embed_idx = None
+        for i, o in enumerate(self.session.get_outputs()):
+            if o.shape and o.shape[-1] == PERCH_EMBED_DIM:
+                self._embed_idx = i
+                break
+        if self._embed_idx is None:
+            self._embed_idx = 1
+        print(f"Perch ONNX loaded: embed_idx={self._embed_idx}")
+
+    @torch.no_grad()
+    def embed(self, waveforms_5s):
+        """waveforms_5s: (B, 160000) float32, returns (B, 1536) embeddings."""
+        wav_np = waveforms_5s.cpu().numpy()
+        results = self.session.run(None, {self.input_name: wav_np})
+        return torch.from_numpy(results[self._embed_idx]).float()
+
+# ------------------------------------------------------------------
+# Distillation head: GAP + Linear to Perch embedding space
+# ------------------------------------------------------------------
+class DistillHead(nn.Module):
+    """Projects backbone features to Perch's 1536-d space via GAP + Linear."""
+    def __init__(self, backbone_dim, embed_dim=1536):
+        super().__init__()
+        self.proj = nn.Linear(backbone_dim, embed_dim)
+
+    def forward(self, feature_map):
+        gap = feature_map.mean(dim=[2, 3])   # (B, C, F, T) -> (B, C)
+        return self.proj(gap)                 # (B, embed_dim)
+
+# ------------------------------------------------------------------
+# SED Model V2: GeMFreq + bottleneck + AttBlock (recommended)
+# ------------------------------------------------------------------
+class GeMFreqPool(nn.Module):
+    """Generalized Mean pooling over frequency. Learnable p starts at 3.0
+    (sharper than mean, softer than max). Lets the model emphasize
+    frequency bands where species vocalize."""
+    def __init__(self, p_init=3.0, eps=1e-6):
+        super().__init__()
+        self.p = nn.Parameter(torch.tensor(float(p_init)))
+        self.eps = eps
+
+    def forward(self, x):
+        p = self.p.clamp(min=1.0)
+        x = x.clamp(min=self.eps).pow(p)
+        x = x.mean(dim=2)
+        return x.pow(1.0 / p)
+
+class BirdSEDModel(nn.Module):
+    """SED model with 1st-place-inspired design: https://www.kaggle.com/code/nikitababich/birdclef2025-1st-place-inference
+    - GeMFreq pooling (learnable, sharper than mean)
+    - 512-dim bottleneck with dropout
+    - Attention-weighted clip logits from frame logits
+    - Distillation: GAP+Linear branch for MSE to Perch
+    - Stop gradient: backbone trains from distillation only
+    """
+    def __init__(self, backbone_name=BACKBONE_NAME, num_classes=NUM_CLASSES,
+                 drop_path_rate=0.1, hidden_dim=512):
+        super().__init__()
+        self.backbone = timm.create_model(
+            backbone_name, pretrained=True, in_chans=1,
+            num_classes=0, global_pool="", drop_path_rate=drop_path_rate,
+        )
+        with torch.no_grad():
+            n_tf = TRAIN_SAMPLES // HOP_LENGTH + 1
+            dummy = torch.randn(1, 1, N_MELS, n_tf)
+            feat = self.backbone(dummy)
+            self.backbone_dim = feat.shape[1]
+            print(f"V2 backbone: {tuple(feat.shape)}  (C={self.backbone_dim})")
+
+        self.gem_freq = GeMFreqPool(p_init=3.0)
+        self.dense = nn.Sequential(
+            nn.Dropout(0.25),
+            nn.Linear(self.backbone_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+        )
+        self.att = nn.Conv1d(hidden_dim, num_classes, kernel_size=1, bias=True)
+        self.cla = nn.Conv1d(hidden_dim, num_classes, kernel_size=1, bias=True)
+        nn.init.xavier_uniform_(self.att.weight)
+        nn.init.xavier_uniform_(self.cla.weight)
+        self.att.bias.data.fill_(0.)
+        self.cla.bias.data.fill_(0.)
+        if USE_PERCH_DISTILL:
+            self.distill_head = DistillHead(self.backbone_dim, PERCH_EMBED_DIM)
+
+    def forward(self, x, return_framewise=False, return_distill=False):
+        h = self.backbone(x)
+        distill_emb = None
+        if return_distill and hasattr(self, 'distill_head'):
+            distill_emb = self.distill_head(h)
+
+        # Stop gradient: SED head doesn't update the backbone
+        h_cls = h.detach() if USE_PERCH_DISTILL else h
+
+        h_cls = self.gem_freq(h_cls)            # (B, C, T)
+        h_cls = h_cls.permute(0, 2, 1)          # (B, T, C)
+        h_cls = self.dense(h_cls)               # (B, T, 512)
+        h_cls = h_cls.permute(0, 2, 1)          # (B, 512, T)
+
+        norm_att = torch.softmax(torch.tanh(self.att(h_cls)), dim=-1)
+        framewise_logits = self.cla(h_cls)
+        clip_logits = torch.sum(norm_att * framewise_logits, dim=2)
+
+        fw = framewise_logits.permute(0, 2, 1) if return_framewise else None
+        if return_framewise and return_distill: return clip_logits, fw, distill_emb
+        elif return_framewise: return clip_logits, fw
+        elif return_distill: return clip_logits, distill_emb
+        return clip_logits
+
+def make_model():
+        return BirdSEDModel(BACKBONE_NAME).to(device)
+
+print("OK Model definitions ready")

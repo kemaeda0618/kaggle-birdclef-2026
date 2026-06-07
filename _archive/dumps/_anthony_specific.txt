@@ -1,0 +1,476 @@
+
+======================================================================
+# CELL 2 (code)
+======================================================================
+solutions = {
+ #'task1'    : 'run SED once',
+ 'type_add' : 'TAX_SMOOTHING',
+ 'Models'   : [
+  {'Model':'Model_22','subm':'subm_22.csv','weight':0.0305,'xSED':[],          'LB':'0.928'},
+  {'Model':'Model_51','subm':'subm_51.csv','weight':0.9695,'xSED':[0.60, 0.40],'LB':'0.949'},
+ ]
+}
+
+======================================================================
+# CELL 3 (code)
+======================================================================
+_ensemble_models = [model['Model' ] for model in solutions['Models']]
+_files_subm      = [model['subm'  ] for model in solutions['Models']]
+_weights         = [model['weight'] for model in solutions['Models']]
+_xsed            = [model['xSED'  ] for model in solutions['Models']]
+_lbs             = [model['LB'    ] for model in solutions['Models']]
+
+# _runSED_once = True if 'task1' in solutions and solutions['task1']=='run SED once' else False
+
+======================================================================
+# CELL 23 (code)
+======================================================================
+# direct_add
+
+import pandas as pd, os, time, sys
+from warnings import filterwarnings; filterwarnings("ignore")
+
+
+def direct_add2():
+    print(f'Ensemble: {_ensemble_models},   LB: {_lbs},   weights: {_weights}')
+    df0 = pd.read_csv(_files_subm[0], index_col = "row_id")              ;display(df0)
+    df1 = pd.read_csv(_files_subm[1], index_col = "row_id")[df0.columns] ;display(df1)
+    dfs = df0 * _weights[0] + _weights[1] * df1
+    return dfs
+
+
+def direct_add3():
+    print(f'Ensemble: {_ensemble_models},   LB: {_lbs},   weights: {_weights}')
+    df0 = pd.read_csv(_files_subm[0], index_col = "row_id")              ;display(df0)
+    df1 = pd.read_csv(_files_subm[1], index_col = "row_id")[df0.columns] ;display(df1)
+    df2 = pd.read_csv(_files_subm[2], index_col = "row_id")[df0.columns] ;display(df2)
+    dfs = \
+        df0 * _weights[0] + \
+        df1 * _weights[1] + \
+        df2 * _weights[2]
+    return dfs
+
+
+def direct_add4():
+    print(f'Ensemble: {_ensemble_models},   LB: {_lbs},   weights: {_weights}')
+    df0 = pd.read_csv(_files_subm[0], index_col = "row_id")              ;display(df0)
+    df1 = pd.read_csv(_files_subm[1], index_col = "row_id")[df0.columns] ;display(df1)
+    df2 = pd.read_csv(_files_subm[2], index_col = "row_id")[df0.columns] ;display(df2)
+    df3 = pd.read_csv(_files_subm[3], index_col = "row_id")[df0.columns] ;display(df3)
+    dfs = \
+        df0 * _weights[0] + \
+        df1 * _weights[1] + \
+        df2 * _weights[2] + \
+        df3 * _weights[3]
+    return dfs
+
+
+def rank_1_add2():
+    PROTOSSM_W = _weights[0]
+    SED_W      = _weights[1]
+    EPS        = 1e-5
+    PROTO = pd.read_csv(_files_subm[0])
+    SED   = pd.read_csv(_files_subm[1]) 
+    cols = [c for c in SED.columns if c != "row_id"]
+    missing = sorted(set(SED["row_id"]) - set(PROTO["row_id"]))
+    if missing:
+        raise ValueError(f"row_id mismatch: {len(missing)} rows in ProtoSSM not in SED; first={missing[:3]}")
+    PROTO = PROTO.set_index("row_id").loc[SED["row_id"]].reset_index()
+    pSED   = np.clip(SED  [cols].to_numpy("float32"), EPS, 1.0 - EPS)
+    pPROTO = np.clip(PROTO[cols].to_numpy("float32"), EPS, 1.0 - EPS)
+    wSED   = PROTOSSM_W / (PROTOSSM_W + SED_W)
+    wPROTO = SED_W      / (PROTOSSM_W + SED_W)
+    rSED   = pd.DataFrame(pSED)  .rank(axis=0, pct=True).to_numpy("float32")
+    rPROTO = pd.DataFrame(pPROTO).rank(axis=0, pct=True).to_numpy("float32")
+    pred = wSED * rSED  +  rPROTO * wPROTO 
+    submission = SED.copy()
+    submission[cols] = pred.astype("float32") #;submission.to_csv('submission.csv',index=False)
+    return submission
+
+
+def rank_1_add3():
+    PROTO_w1    = _weights[0]
+    PROTO_w2    = _weights[1]
+    SED_w       = _weights[2]
+    EPS         = 1e-5
+    PROTO_1     = pd.read_csv(_files_subm[0])
+    PROTO_2     = pd.read_csv(_files_subm[1])
+    SED         = pd.read_csv(_files_subm[2]) 
+    cols        = [c for c in SED.columns if c != "row_id"]
+    missing1    = sorted(set(SED["row_id"]) - set(PROTO_1["row_id"]))
+    missing2    = sorted(set(SED["row_id"]) - set(PROTO_2["row_id"]))
+    if missing1 :
+        raise ValueError(f"row_id mismatch: {len(missing1)} rows in ProtoSSM not in SED; first={missing1[:3]}")
+    if missing2 :
+        raise ValueError(f"row_id mismatch: {len(missing2)} rows in ProtoSSM not in SED; first={missing2[:3]}")
+    PROTO_1     = PROTO_1.set_index("row_id").loc[SED["row_id"]].reset_index()
+    PROTO_2     = PROTO_2.set_index("row_id").loc[SED["row_id"]].reset_index()
+    pSED        = np.clip(SED    [cols].to_numpy("float32"), EPS, 1.0 - EPS)
+    pPROTO_1    = np.clip(PROTO_1[cols].to_numpy("float32"), EPS, 1.0 - EPS)
+    pPROTO_2    = np.clip(PROTO_2[cols].to_numpy("float32"), EPS, 1.0 - EPS)
+    wSED        = (PROTO_w1 + PROTO_w2) / ((PROTO_w1+PROTO_w2) + SED_W)
+    wPROTO_1    = (SED_W    + PROTO_w2) / ((PROTO_w1+PROTO_w2) + SED_W)
+    wPROTO_2    = (SED_W    + PROTO_w1) / ((PROTO_w1+PROTO_w2) + SED_W)
+    rSED        = pd.DataFrame(pSED)    .rank(axis=0, pct=True).to_numpy("float32")
+    rPROTO_1    = pd.DataFrame(pPROTO_1).rank(axis=0, pct=True).to_numpy("float32")
+    rPROTO_2    = pd.DataFrame(pPROTO_2).rank(axis=0, pct=True).to_numpy("float32")
+    pred        = wSED * rSED   +   rPROTO_1 * wPROTO_1   +   rPROTO_2 * wPROTO_2 
+    subm        = SED.copy()
+    subm[cols]  = pred.astype("float32")
+    return subm
+
+
+def _read_submission_checked(path):
+    df = pd.read_csv(path)
+    assert "row_id" in df.columns, f"row_id column missing in {path}"
+    assert df["row_id"].is_unique, f"duplicate row_id values in {path}"
+    prob_cols = [c for c in df.columns if c != "row_id"]
+    assert prob_cols, f"no probability columns in {path}"
+    values = df[prob_cols].to_numpy()
+    assert np.isfinite(values).all(), f"NaN/inf values in {path}"
+    assert values.min() >= 0.0 and values.max() <= 1.0, f"probabilities outside [0, 1] in {path}"
+    return df.set_index("row_id")
+
+
+def direct_addsafe():
+    print(f'Ensemble: {_ensemble_models},   LB: {_lbs},   weights: {_weights}')
+    assert len(_files_subm) == len(_weights), "submission file / weight length mismatch"
+    weight_sum = float(sum(_weights))
+    assert weight_sum > 0, "ensemble weights must sum to a positive value"
+    if not np.isclose(weight_sum, 1.0, atol=1e-6):
+        print(f"Normalizing ensemble weights from sum={weight_sum:.6f}")
+    norm_weights = [float(w) / weight_sum for w in _weights]
+    dfs = [_read_submission_checked(path) for path in _files_subm]
+    base_idx = dfs[0].index
+    base_cols = dfs[0].columns
+    for path, df in zip(_files_subm, dfs):
+        assert df.columns.equals(base_cols), f"Column mismatch in {path}"
+        missing = base_idx.difference(df.index)
+        extra = df.index.difference(base_idx)
+        assert len(missing) == 0 and len(extra) == 0, (
+            f"row_id mismatch in {path}: missing={len(missing)}, extra={len(extra)}"
+        )
+    out = sum(w * df.loc[base_idx, base_cols] for w, df in zip(norm_weights, dfs))
+    values = out.to_numpy()
+    assert np.isfinite(values).all(), "NaN/inf in final blend"
+    assert values.min() >= 0.0 and values.max() <= 1.0, "final probabilities outside [0, 1]"
+    return out
+    
+
+def division_attention():
+
+    sub_w1 = [0.014,  0.021,  0.965]
+    sub_w2 = [0.0137, 0.0213, 0.965]
+
+    df_sample = pd.read_csv('/kaggle/input/competitions/birdclef-2026/sample_submission.csv')
+    
+    list_birds = [col for col in df_sample.columns if col != 'row_id']
+    
+    list_birds_0 = [f'{bird} 0' for bird in list_birds]
+    list_birds_1 = [f'{bird} 1' for bird in list_birds]
+    list_birds_2 = [f'{bird} 2' for bird in list_birds]
+
+    df21 = pd.read_csv(_files_subm[0])
+    df54 = pd.read_csv(_files_subm[1])
+    df74 = pd.read_csv(_files_subm[2])
+    
+    df21 = df21.rename(columns={bird : f'{bird} 0' for bird in list_birds})
+    df54 = df54.rename(columns={bird : f'{bird} 1' for bird in list_birds})
+    df74 = df74.rename(columns={bird : f'{bird} 2' for bird in list_birds})
+
+    dfs = pd.merge(df21,df54, on=['row_id'])
+    dfs = pd.merge(dfs, df74, on=['row_id'])
+    
+    for i in range(len(list_birds)):
+        
+        sub_w = sub_w1 if i < 117 else sub_w2
+            
+        dfs[list_birds[i]] =\
+            dfs[list_birds_0[i]]*sub_w[0] +\
+            dfs[list_birds_1[i]]*sub_w[1] +\
+            dfs[list_birds_2[i]]*sub_w[2]
+             
+    bc = ['row_id'] + list_birds
+         
+    return dfs[bc]
+    
+
+def direct():
+    if len(_ensemble_models) == 2:  return direct_add2()
+    if len(_ensemble_models) == 3:  return direct_add3()
+
+
+def rank_1():
+    if len(_ensemble_models) == 2:  return rank_1_add2()
+    if len(_ensemble_models) == 3:  return rank_1_add3()
+
+
+def add_safe():
+    if len(_ensemble_models) == 2:  return direct_addsafe()
+
+======================================================================
+# CELL 24 (code)
+======================================================================
+# ---------------------------
+# Taxonomy smoothing post-processing
+# ---------------------------
+def f_TAX_SMOOTHING_POSTPROC(
+    f_direct=direct,
+    genus_α=0.15,
+    class_α=0.05,
+):
+
+    # Generate base submission
+    submission = f_direct()
+
+    # Import dependencies
+    import pandas as pd
+    import numpy as np
+
+    # Print initial statistics
+    print(
+        f"[v221] Pre-tax-smoothing: "
+        f"shape={submission.shape}, "
+        f"mean={submission.values.mean():.4f}"
+    )
+
+    # Define taxonomy paths
+    tax_paths = [
+        "/kaggle/input/competitions/birdclef-2026/taxonomy.csv",
+        "/kaggle/input/birdclef-2026/taxonomy.csv",
+    ]
+
+    # Initialize taxonomy dataframe
+    taxonomy_df = None
+
+    # Search for taxonomy file
+    for taxonomy_path in tax_paths:
+
+        # Check if file exists
+        if os.path.exists(taxonomy_path):
+
+            # Load taxonomy
+            taxonomy_df = pd.read_csv(taxonomy_path)
+
+            # Stop after first valid file
+            break
+
+    # Skip smoothing if taxonomy missing
+    if taxonomy_df is None:
+
+        # Print warning
+        print("[v221] taxonomy.csv not found — skipping tax smoothing")
+
+    else:
+
+        # Initialize mappings
+        species_to_genus = {}
+        species_to_class = {}
+
+        # Build taxonomy mappings
+        for _, row in taxonomy_df.iterrows():
+
+            # Extract taxonomy fields
+            label = str(row["primary_label"])
+            scientific_name = str(row.get("scientific_name", ""))
+            class_name = str(row.get("class_name", ""))
+
+            # Extract genus from scientific name
+            genus = (
+                scientific_name.split(" ")[0]
+                if " " in scientific_name
+                else scientific_name
+            )
+
+            # Store mappings
+            species_to_genus[label] = genus
+            species_to_class[label] = class_name
+
+        # Get submission columns
+        columns = list(submission.columns)
+
+        # Initialize grouping dictionaries
+        genus_groups = {}
+        class_groups = {}
+
+        # Build genus/class groups
+        for column in columns:
+
+            # Resolve taxonomy
+            genus = species_to_genus.get(column, column)
+            class_name = species_to_class.get(column, "")
+
+            # Add genus member
+            genus_groups.setdefault(genus, []).append(column)
+
+            # Add class member
+            if class_name:
+                class_groups.setdefault(class_name, []).append(column)
+
+        # Keep only multi-member genus groups
+        multi_genus = {
+            genus: members
+            for genus, members in genus_groups.items()
+            if len(members) > 1
+        }
+
+        # Keep only multi-member class groups
+        multi_class = {
+            class_name: members
+            for class_name, members in class_groups.items()
+            if len(members) > 1
+        }
+
+        # Print group statistics
+        print(
+            f"[v221] multi-genus groups: {len(multi_genus)}, "
+            f"multi-class groups: {len(multi_class)}"
+        )
+
+        # Store smoothing coefficients
+        alpha_genus = genus_α
+        alpha_class = class_α
+
+        # Copy prediction probabilities
+        probs = submission.values.astype(np.float32).copy()
+
+        # ---------------------------
+        # Genus-level smoothing
+        # ---------------------------
+        for genus, members in multi_genus.items():
+
+            # Resolve column indices
+            indices = [
+                columns.index(member)
+                for member in members
+            ]
+
+            # Compute genus mean
+            genus_mean = probs[:, indices].mean(
+                axis=1,
+                keepdims=True,
+            )
+
+            # Apply smoothing
+            probs[:, indices] = (
+                (1 - alpha_genus) * probs[:, indices]
+                + alpha_genus * genus_mean
+            )
+
+        # ---------------------------
+        # Class-level smoothing
+        # ---------------------------
+        for class_name, members in multi_class.items():
+
+            # Resolve column indices
+            indices = [
+                columns.index(member)
+                for member in members
+            ]
+
+            # Compute class mean
+            class_mean = probs[:, indices].mean(
+                axis=1,
+                keepdims=True,
+            )
+
+            # Apply smoothing
+            probs[:, indices] = (
+                (1 - alpha_class) * probs[:, indices]
+                + alpha_class * class_mean
+            )
+
+        # Rebuild submission dataframe
+        submission = pd.DataFrame(
+            probs,
+            index=submission.index,
+            columns=submission.columns,
+        )
+
+        # Print final statistics
+        print(
+            f"[v221] Post-tax-smoothing: "
+            f"mean={submission.values.mean():.4f}"
+        )
+
+    # Return final submission
+    return submission
+
+======================================================================
+# CELL 25 (code)
+======================================================================
+if solutions['type_add'] == 'rank.1':             f_add = rank_1
+if solutions['type_add'] == 'direct':             f_add = direct
+
+if solutions['type_add'] == 'division_attention': f_add = division_attention
+
+if solutions['type_add'] == 'TAX_SMOOTHING':      f_add = f_TAX_SMOOTHING_POSTPROC
+
+======================================================================
+# CELL 27 (code)
+======================================================================
+submission = f_add()
+
+submission . to_csv(f"submission.csv", index = True)
+
+
+======================================================================
+# MODEL_51 CELL — Key snippets (POWEROPT body)
+======================================================================
+
+--- rank_aware_scaling function ---
+L694:         def rank_aware_scaling(probs, n_windows=12, power=0.5):
+L695:             N, C = probs.shape
+L696:             view     = probs.reshape(-1, n_windows, C)
+L697:             file_max = view.max(axis=1, keepdims=True)
+L698:             return (view * np.power(file_max, power)).reshape(N, C)
+L699:         
+
+--- lambda_prior usage (first 20 mentions) ---
+L4: # #### exp019 — EoS.4 0.948 + exp017 lambda_prior=0.5 + rank_aware_scaling(power) 0.5 -> 0.6
+L20: # #### exp017 — EoS.4 0.948 anchor with apply_prior(lambda_prior) 0.4 -> 0.5
+L26: # - `apply_prior(..., lambda_prior=0.4)` -> `apply_prior(..., lambda_prior=0.5)`
+L33: # - The 0.948 pipeline's lambda_prior=0.4 was set as a literal default
+L42: # - If exp017 > 0.948: bisect upward (lambda_prior = 0.6, then 0.55 etc).
+L44: # - If exp017 < 0.948: bisect downward (lambda_prior = 0.3, then 0.35).
+L664: def apply_prior(scores, sites, hours, tables, lambda_prior=0.4):
+L684: out += lambda_prior * (np.log(p) - np.log1p(-p))
+L1192: hours=meta_te["hour_utc"].to_numpy(), tables=prior_tables, lambda_prior=0.65)
+L1226: hours=meta_tr["hour_utc"].to_numpy(), tables=prior_tables, lambda_prior=0.65)
+
+--- Hour prior code ---
+L227: if not m: return {"site": "unknown", "hour_utc": -1}
+L229: return {"site": site, "hour_utc": int(hms[:2])}
+L419: hours    [wr:wr + N_WINDOWS] = meta["hour_utc"]
+L437: "site": sites, "hour_utc": hours})
+L584: # ── UPGRADED prior tables — joint site-hour bucket ────────────────────────────
+L599: hour_keys = sorted(sc_df["hour_utc"].dropna().astype(int).unique())
+L605: mask = sc_df["hour_utc"].astype(int).values == h
+L613: for s, h in zip(sc_df["site"].dropna(), sc_df["hour_utc"].dropna())
+L623: sc_df["hour_utc"].astype(int).values == h
+L628: # ── Tweak D: Circular Gaussian smoothing on hour priors ──────────────────
+L629: # Motivation: Raw per-hour prior tables are computed from hard count buckets
+L635: # This is done on the N_hours x N_classes hour_p matrix (axis=0 = hours).
+L638: _full_hour_p = np.zeros((24, hour_p.shape[1]), dtype=np.float32)
+L640: _full_hour_p[int(_h)] = hour_p[_i]
+L642: _tiled = np.tile(_full_hour_p, (3, 1))  # shape: (72, N_CLASSES)
+
+--- Cross-Attention code ---
+L991: self.cross_attn=nn.ModuleList([nn.MultiheadAttention(d_model,cross_attn_heads,dropout=dropout,batch_first=True) for _ in
+
+--- Final blend / weight (Model_5*) ---
+L720: def build_class_freq_weights(Y, cap=10.0):
+L723: weights = np.clip(1.0 / (freq ** 0.5), 1.0, cap)
+L735: def train_mlp_probes(emb, scores_raw, Y, min_pos=5, pca_dim=64, alpha_blend=0.4):
+L747: class_weights = build_class_freq_weights(Y, cap=10.0)
+L849: h = torch.bmm(h, self.weights[i]) + self.biases[i].unsqueeze(1)
+L883: emb_test, scores_test, probe_models, scaler, pca, alpha_blend=0.4
+L1057: pos_weight=((total-pos_cnt)/(pos_cnt+1)).clamp(max=25.0)
+L1058: opt=torch.optim.AdamW(model.parameters(),lr=lr,weight_decay=1e-3)
+L1066: loss=F.binary_cross_entropy_with_logits(out,lab_t,pos_weight=pos_weight[None,None,:])+0.15*F.mse_loss(out,log_t)
+L1113: n_epochs=30, patience=8, lr=1e-3, correction_weight=0.30, verbose=False):
+L1123: opt=torch.optim.AdamW(model.parameters(),lr=lr,weight_decay=1e-3)
+L1195: emb=emb_tr, scores_raw=sc_tr, Y=Y_FULL_aligned, min_pos=5, pca_dim=64, alpha_blend=0.4)
+L1205: f"[LB0.948] Per-class first-pass weights: mapped={ENSEMBLE_W_PER_CLASS[MAPPED_MASK].mean():.2f} "
+L1262: correction_weight=0.30,  # initial value; overridden by grid search below
+L1287: print(f"  correction_weight={_w:.2f}  OOF macro-AUC={_auc:.5f}")

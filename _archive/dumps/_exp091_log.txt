@@ -1,0 +1,86 @@
+0.00s - Debugger warning: It seems that frozen modules are being used, which may
+0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+0.00s - to python to disable frozen modules.
+0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+0.00s - Debugger warning: It seems that frozen modules are being used, which may
+0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+0.00s - to python to disable frozen modules.
+0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+CUDA available: True
+  Device: Tesla T4
+  VRAM: 15.6GB
+   ââââââââââââââââââââââââââââââââââââââââ 277.0/277.0 MB 6.5 MB/s eta 0:00:00
+   ââââââââââââââââââââââââââââââââââââââââ 12.2/12.2 MB 111.4 MB/s eta 0:00:00
+   ââââââââââââââââââââââââââââââââââââââââ 277.0/277.0 MB 6.5 MB/s eta 0:00:00
+   ââââââââââââââââââââââââââââââââââââââââ 12.2/12.2 MB 111.4 MB/s eta 0:00:00
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+dask-cuda 26.2.0 requires cuda-core==0.3.*, but you have cuda-core 1.0.1 which is incompatible.
+dask-cuda 26.2.0 requires numba-cuda<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+distributed-ucxx-cu12 0.48.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+cuml-cu12 26.2.0 requires numba<0.62.0,>=0.60.0, but you have numba 0.65.1 which is incompatible.
+cuml-cu12 26.2.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+ucxx-cu12 0.48.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+cudf-cu12 26.2.1 requires numba<0.62.0,>=0.60.0, but you have numba 0.65.1 which is incompatible.
+cudf-cu12 26.2.1 requires numba-cuda[cu12]<0.23.0,>=0.22.2, but you have numba-cuda 0.30.2 which is incompatible.
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+dask-cuda 26.2.0 requires cuda-core==0.3.*, but you have cuda-core 1.0.1 which is incompatible.
+dask-cuda 26.2.0 requires numba-cuda<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+distributed-ucxx-cu12 0.48.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+cuml-cu12 26.2.0 requires numba<0.62.0,>=0.60.0, but you have numba 0.65.1 which is incompatible.
+cuml-cu12 26.2.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+ucxx-cu12 0.48.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+cudf-cu12 26.2.1 requires numba<0.62.0,>=0.60.0, but you have numba 0.65.1 which is incompatible.
+cudf-cu12 26.2.1 requires numba-cuda[cu12]<0.23.0,>=0.22.2, but you have numba-cuda 0.30.2 which is incompatible.
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+dask-cuda 26.2.0 requires cuda-core==0.3.*, but you have cuda-core 1.0.1 which is incompatible.
+dask-cuda 26.2.0 requires numba-cuda<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+distributed-ucxx-cu12 0.48.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+cuml-cu12 26.2.0 requires numba<0.62.0,>=0.60.0, but you have numba 0.65.1 which is incompatible.
+cuml-cu12 26.2.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+ucxx-cu12 0.48.0 requires numba-cuda[cu12]<0.23.0,>=0.22.1, but you have numba-cuda 0.30.2 which is incompatible.
+cudf-cu12 26.2.1 requires numba<0.62.0,>=0.60.0, but you have numba 0.65.1 which is incompatible.
+cudf-cu12 26.2.1 requires numba-cuda[cu12]<0.23.0,>=0.22.2, but you have numba-cuda 0.30.2 which is incompatible.
+torch=2.10.0+cu128, ort=1.26.0
+ort providers: ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+BASE: /kaggle/input/competitions/birdclef-2026
+Classes: 234
+Taxonomy: 234 species
+train_audio: 35549 files exist
+train_sc: 10658 files
+SS labels: 739 rows, 66 files
+Labeled files: 66
+SS meta: 792 windows
+Truth SS: (792, 234), positives=3122, active species=75
+Perch: /kaggle/input/datasets/tuckerarrants/perch-v2-no-dft-onnx/perch_v2_no_dft.onnx
+Perch input: inputs, providers: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+  output[0] embedding shape=['batch', 1536]
+  output[1] spatial_embedding shape=['batch', 16, 4, 1536]
+  output[2] spectrogram shape=['batch', 500, 128]
+  output[3] label shape=['batch', 14795]
+EMBED_IDX=1, LABEL_IDX=3
+Perch meta dir: /kaggle/input/datasets/jaejohn/perch-meta
+Perch label CSV: None
+Test: emb (2, 16, 4, 1536), scores (2, 14795)
+Total mapped: 0
+BC mapped test: (2, 234), non-zero species: 234
+Audio loaders defined
+=== Phase A: Labeled SS ===
+  loaded 100/792 windows
+  loaded 200/792 windows
+  loaded 300/792 windows
+  loaded 400/792 windows
+  loaded 500/792 windows
+  loaded 600/792 windows
+  loaded 700/792 windows
+Loaded 792 windows in 6.6s
+Perch SS done: emb (792, 16, 4, 1536), logits (792, 14795), time 9.6s
+BC2026 mapped: (792, 234), non-zero species: 234
+Saved Phase A outputs to /kaggle/working
+=== Phase B: train_audio ===
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "C:\Users\maeke\work\kaggle\birdclef-2026\_check_exp091_run.py", line 22, in <module>
+    s = m.group(1).encode().decode("unicode_escape").rstrip("\n")
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'unicodeescape' codec can't decode byte 0x5c in position 7: \ at end of string
+decoding with 'unicode_escape' codec failed

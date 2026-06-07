@@ -1,0 +1,126 @@
+0.00s - Debugger warning: It seems that frozen modules are being used, which may
+0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+0.00s - to python to disable frozen modules.
+0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+0.00s - Debugger warning: It seems that frozen modules are being used, which may
+0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+0.00s - to python to disable frozen modules.
+0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+ONNX Runtime installed
+TF 2.20 installed
+OpenVINO installed
+ONNX Runtime available ✅
+OpenVINO available ✅ (2026.0.0-20965-c6d6a13a886-releases/2026/0)
+MODE = submit
+✅ V18 CFG loaded
+  n_epochs=40  patience=8  oof_n_splits=3  mlp_max_iter=200
+Config ready
+  run_oof=False  verbose=False  dryrun=0
+Classes: 234 | Fully-labeled files: 59
+Full-file windows: 708 | Active classes: 71
+Using ONNX Perch (150x faster)
+Mapped: 203 / 234 species have a Perch logit
+Unmapped species total:        31
+Species with genus proxy:      3
+Species still without signal:  28
+Proxy targets:
+  1491113      (Amphibia  ) ← 9 Perch genus matches
+  1595929      (Amphibia  ) ← 2 Perch genus matches
+  25073        (Amphibia  ) ← 6 Perch genus matches
+✅ Perch inference engine (ONNX + multithreaded I/O) defined
+USE_ONNX = True  (cache will be built with ONNX)
+No cache found — building from scratch
+Building Perch cache from 59 fully-labeled train_soundscape files…
+  Perch pass finished in 103.1s  scores=(708, 234) embs=(708, 1536)
+  Cache saved to /kaggle/working/cache
+Loading Perch cache from: /kaggle/working/cache
+  npz keys      : ['scores', 'embs', 'primary_labels']
+  parquet cols  : ['row_id', 'filename', 'site', 'hour_utc']
+  scores ← 'scores'  shape=(708, 234)
+  embs   ← 'embs'  shape=(708, 1536)
+  primary_labels schema OK
+sc_tr: (708, 234)  emb_tr: (708, 1536)  Y_FULL_aligned: (708, 234)
+✅ Temporal smoothing helper defined
+✅ Prior table functions defined
+✅ File-level confidence scaling defined
+✅ Temperatures: 171 event species (T=1.10), 63 texture species (T=0.95)
+✅ CHANGE 1: Upgraded MLP probe (pca_dim=64, hidden=(128,64), max_iter=300, min_pos=5)
+✅ Vectorized MLP probe inference defined
+✅ CHANGE 2: Isotonic calibration + per-class threshold optimization defined
+✅ Rank-aware scaling defined
+✅ Adaptive delta smoothing defined
+✅ CHANGE 4: LightProtoSSM with cross-attention (2 heads) defined
+✅ CHANGE 3: TTA with 5 circular shifts defined
+✅ ResidualSSM defined (~439K params, ~20s training)
+Submit mode: skipping OOF evaluation
+No hidden test — dry-run on 20 train files
+Test scores: (240, 234)
+LightProtoSSM params: 723,093
+LightProtoSSM trained — best loss=0.9875
+ProtoSSM training: 9.3s
+Embedding: (708, 1536) → PCA: (708, 64)  (variance retained: 81.47%)
+Training MLP probes for 58 species (>= 5 pos windows)...
+Trained 58 MLP probes
+Calibrated 31 classes
+Mean threshold: 0.471
+Range: [0.25, 0.50]
+Residuals: mean=-0.2118  std=0.2048  abs_mean=0.2224
+ResidualSSM params: 176,010
+ResidualSSM trained — best val MSE=0.024259
+Correction magnitude: mean_abs=0.2100  max=0.7363
+ResidualSSM training: 1.2s
+Correction applied — mean_abs=0.2054  score range [-8.326, 7.297]
+probs_exp037 ready for blend: shape=(240, 234)
+submission.csv saved — shape (240, 235)
+Total wall time: 2.9 min
+[exp039] Building audio_cache from 20 test files (for Tucker + exp029)...
+  audio_cache [1/20] 0s
+  audio_cache [20/20] 1s
+audio_cache built: 20 files in 1s
+probs_exp010 (=exp037 reshaped): (20, 12, 234)
+PRIMARY_LABELS: 234
+SED dir: /kaggle/input/datasets/tuckerarrants/bc2026-distilled-sed-public
+SED folds loaded: ['sed_fold0.onnx', 'sed_fold1.onnx', 'sed_fold2.onnx', 'sed_fold3.onnx', 'sed_fold4.onnx']
+  SED [10/20] 33s
+  SED [20/20] 48s
+SED done: (20, 12, 234) in 48s
+exp031 (exp029 ckpt) state dir: /kaggle/input/datasets/maekeso/birdclef2026-exp029-l1-single
+  ckpt: r3_fold0_ckpt_best_ns22.pth (179.6MB)
+  ckpt epoch=15, best_ns22=0.9409
+  e17 loaded: 44.9M params
+  e17 [10/20] 28s
+  e17 [20/20] 57s
+e17 done: (20, 12, 234) in 57s
+exp015 OV: /kaggle/input/datasets/maekeso/birdclef2026-exp015-weights/r2_ov/model.xml
+  exp015 OV compiled, input shape=[?,?,?,?]
+  e015 [10/20] 5s
+  e015 [20/20] 11s
+e015 done: (20, 12, 234) in 11s
+  4-way rank blend: exp037=0.3 / Tucker=0.35 / e29=0.2 / e015=0.15
+  Sonotype mirror applied to 10 columns
+blend shape: (20, 12, 234), mean=0.5036, max=1.0000
+WARNING: 3 missing row_ids - filling zeros
+Submission: (3, 235), total 324s (5.4 min)
+Mean pred: 0.000000
+Max pred:  0.000000
+                                    row_id  1161364  116570  1176823  1491113  \
+0   BC2026_Test_0001_S05_20250227_010002_5      0.0     0.0      0.0      0.0   
+1  BC2026_Test_0001_S05_20250227_010002_10      0.0     0.0      0.0      0.0   
+2  BC2026_Test_0001_S05_20250227_010002_15      0.0     0.0      0.0      0.0   
+   1595929  209233  22930  22956  22961  ...  whnjay1  whtdov  whwpic1  \
+0      0.0     0.0    0.0    0.0    0.0  ...      0.0     0.0      0.0   
+1      0.0     0.0    0.0    0.0    0.0  ...      0.0     0.0      0.0   
+2      0.0     0.0    0.0    0.0    0.0  ...      0.0     0.0      0.0   
+   y00678  yebcar  yebela1  yecmac  yecpar  yehcar1  yeofly1  
+0     0.0     0.0      0.0     0.0     0.0      0.0      0.0  
+1     0.0     0.0      0.0     0.0     0.0      0.0      0.0  
+2     0.0     0.0      0.0     0.0     0.0      0.0      0.0  
+[3 rows x 235 columns]
+/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\|'
+  cells[i][c] = re.sub('\\\\\|', '|', cell)
+/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\_'
+  text = re.sub(r'_', '\_', text) # Escape underscores in display text
+[NbConvertApp] Converting notebook __notebook__.ipynb to notebook
+[NbConvertApp] Writing 168394 bytes to __notebook__.ipynb
+[NbConvertApp] Converting notebook __notebook__.ipynb to html
+[NbConvertApp] Writing 779191 bytes to __results__.html

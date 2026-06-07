@@ -1,0 +1,58 @@
+
+=== needless090 0.935 ft ===
+  — Chunk filter (max_prob > threshold drops chunks): no match
+  ✓ Class zero-out (prob < t → 0):
+      [clip.*prob]
+      ...                      base_alpha=0.20) | probs = np.clip(probs, 0.0, 1.0) |  | # probs = apply_per_class_thresholds(probs, PER_CLASS_THRESHOLDS) | ...
+  — Conditional pseudo sampling (40/60 / pseudo_birds): no match
+  — MixUp alpha=None / sum aggregation: no match
+  — OOF pseudo (separate path with fold_id): no match
+
+=== needless090 0.934 s ===
+  — Chunk filter (max_prob > threshold drops chunks): no match
+  ✓ Class zero-out (prob < t → 0):
+      [clip.*prob]
+      ... n_windows=N_WINDOWS, top_k=top_k) |     probs = np.clip(probs, 0.0, 1.0) |  | # --- Step 3: V17 Rank-aware post-processing --- | if CFG.get("rank_...
+  — Conditional pseudo sampling (40/60 / pseudo_birds): no match
+  — MixUp alpha=None / sum aggregation: no match
+  ✓ OOF pseudo (separate path with fold_id):
+      [\"fold_id\"]
+      ..._prior"].astype(np.float32) |     oof_fold_id = arr["fold_id"].astype(np.int16) | else: |     print("Building OOF meta-features...") |     oof_base...
+
+=== mtoshidesu 0.941 ===
+  — Chunk filter (max_prob > threshold drops chunks): no match
+  ✓ Class zero-out (prob < t → 0):
+      [clip.*prob]
+      ...                      base_alpha=0.20) | probs = np.clip(probs, 0.0, 1.0) |  | probs = apply_per_class_thresholds(probs, PER_CLASS_THRESHOLDS)  #...
+  — Conditional pseudo sampling (40/60 / pseudo_birds): no match
+  — MixUp alpha=None / sum aggregation: no match
+  — OOF pseudo (separate path with fold_id): no match
+
+=== mtoshidesu 0.937 ===
+  — Chunk filter (max_prob > threshold drops chunks): no match
+  ✓ Class zero-out (prob < t → 0):
+      [clip.*prob]
+      ...hresholds(probs, PER_CLASS_THRESHOLDS) | probs = np.clip(probs, 0.0, 1.0).astype(np.float32) |  | sub = pd.DataFrame(probs, columns=PRIMARY_LABEL...
+  — Conditional pseudo sampling (40/60 / pseudo_birds): no match
+  — MixUp alpha=None / sum aggregation: no match
+  — OOF pseudo (separate path with fold_id): no match
+
+=== kojimar 0.949 ===
+  — Chunk filter (max_prob > threshold drops chunks): no match
+  ✓ Class zero-out (prob < t → 0):
+      [clip.*prob]
+      ...           ir = IsotonicRegression(out_of_bounds="clip"); ir.fit(y_prob, y_true); y_cal = ir.transform(y_prob) |         except: y_cal = y_prob |         best_f1, best_t = 0.0, 0.5 |         for ...
+  — Conditional pseudo sampling (40/60 / pseudo_birds): no match
+  — MixUp alpha=None / sum aggregation: no match
+  — OOF pseudo (separate path with fold_id): no match
+
+=== marynaborovska 0.927 protossm-v5 ===
+  — Chunk filter (max_prob > threshold drops chunks): no match
+  ✓ Class zero-out (prob < t → 0):
+      [clip.*prob]
+      ... n_windows=N_WINDOWS, top_k=top_k) |     probs = np.clip(probs, 0.0, 1.0) |  | # --- Step 3: Rank-aware post-processing --- | if CFG.get("rank_awar...
+  — Conditional pseudo sampling (40/60 / pseudo_birds): no match
+  — MixUp alpha=None / sum aggregation: no match
+  ✓ OOF pseudo (separate path with fold_id):
+      [\"fold_id\"]
+      ..._prior"].astype(np.float32) |     oof_fold_id = arr["fold_id"].astype(np.int16) | else: |     print("Building OOF meta-features...") |     oof_base...

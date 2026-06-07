@@ -1,0 +1,38 @@
+{
+  "subset_k3": [
+    "hgnet_r1",
+    "tucker",
+    "convnext"
+  ],
+  "subset_k4": [
+    "hgnet_r1",
+    "tucker",
+    "convnext",
+    "regnety"
+  ],
+  "subset_k5": [
+    "hgnet_r1",
+    "tucker",
+    "convnext",
+    "regnety",
+    "l1_exp029"
+  ],
+  "uniqueness": {
+    "convnext": 0.10306090116500854,
+    "hgnet_r1": 0.28481459617614746,
+    "l1_exp029": 0.09714335203170776,
+    "nfnet_5fold": 0.08999913930892944,
+    "nfnet_e17": 0.09292656183242798,
+    "regnety": 0.09895819425582886,
+    "tucker": 0.1344425082206726
+  },
+  "mean_corr_with_others": {
+    "convnext": 0.8969390988349915,
+    "hgnet_r1": 0.7151854038238525,
+    "l1_exp029": 0.9028566479682922,
+    "nfnet_5fold": 0.9100008606910706,
+    "nfnet_e17": 0.907073438167572,
+    "regnety": 0.9010418057441711,
+    "tucker": 0.8655574917793274
+  }
+}

@@ -1,0 +1,217 @@
+
+========= cell 4 id=load_data =========
+# ============================================================
+# Cell 4: Load data — train.csv, taxonomy, labeled SS, R1 pseudo CSV
+# ============================================================
+sample_sub = pd.read_csv(SAMPLE_SUB_PATH)
+PRIMARY_LABELS = sample_sub.columns[1:].tolist()
+LABEL2IDX = {label: idx for idx, label in enumerate(PRIMARY_LABELS)}
+assert len(PRIMARY_LABELS) == NUM_CLASSES
+
+taxonomy = pd.read_csv(TAXO_PATH)
+label_to_taxon = dict(zip(taxonomy["primary_label"].astype(str),
+                          taxonomy["class_name"].astype(str)))
+TAXON_MASKS = {t: np.array([i for i, l in enumerate(PRIMARY_LABELS)
+                            if label_to_taxon.get(l, "") == t])
+               for t in ["Aves", "Amphibia", "Insecta", "Mammalia", "Reptilia"]}
+
+train_df = pd.read_csv(TRAIN_CSV)
+train_df = train_df[train_df["primary_label"].astype(str).isin(LABEL2IDX)].reset_index(drop=True)
+train_df["filename"] = train_df["filename"].astype(str)
+print(f"Focal train.csv: {len(train_df)} rows")
+
+def _check_exists(fn):
+    return (TA_DIR / fn).exists()
+print("Checking focal file existence...")
+_t0 = time.time()
+train_df["exists"] = train_df["filename"].map(_check_exists)
+train_df = train_df[train_df["exists"]].drop(columns=["exists"]).reset_index(drop=True)
+print(f"  {len(train_df)} focal files exist ({time.time()-_t0:.1f}s)")
+train_df["original_idx"] = np.arange(len(train_df))
+
+skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+train_df["fold"] = -1
+for fold, (_, val_idx) in enumerate(skf.split(train_df, train_df["primary_label"])):
+    train_df.loc[val_idx, "fold"] = fold
+print(f"Focal fold distribution: {train_df['fold'].value_counts().sort_index().to_dict()}")
+
+focal_secondary_labels = {}
+for idx, row in train_df.iterrows():
+    sec = row.get("secondary_labels", "")
+    if pd.isna(sec) or sec in ("", "[]"):
+        continue
+    try:
+        sec_list = eval(sec) if isinstance(sec, str) else []
+    except Exception:
+        continue
+    valid = [s for s in sec_list if s in LABEL2IDX]
+    if valid:
+        focal_secondary_labels[int(row["original_idx"])] = valid
+print(f"Focal secondary labels: {len(focal_secondary_labels)} files")
+
+counts = train_df["primary_label"].value_counts()
+rare_species = counts[counts < MIN_SAMPLE].index.tolist()
+extra_rows = []
+for sp in rare_species:
+    sp_rows = train_df[train_df["primary_label"] == sp]
+    n_copies = int(np.ceil(MIN_SAMPLE / len(sp_rows))) - 1
+    for _ in range(n_copies):
+        extra_rows.append(sp_rows)
+n_before = len(train_df)
+if extra_rows:
+    train_df = pd.concat([train_df] + extra_rows, ignore_index=True)
+print(f"Upsampled {len(rare_species)} rare species (min={MIN_SAMPLE}): {n_before} -> {len(train_df)}")
+
+# Labeled SS
+if LABELS_PATH.exists():
+    sc_labels_raw = pd.read_csv(LABELS_PATH).drop_duplicates()
+    if sc_labels_raw["start"].dtype == object:
+        sc_labels_raw["start_sec"] = pd.to_timedelta(sc_labels_raw["start"]).dt.total_seconds().astype(int)
+    else:
+        sc_labels_raw["start_sec"] = sc_labels_raw["start"].astype(int)
+
+    sc_meta = (sc_labels_raw[["filename", "start_sec"]]
+               .drop_duplicates()
+               .reset_index(drop=True))
+    if "site" in sc_labels_raw.columns:
+        site_map = sc_labels_raw.groupby("filename")["site"].first().to_dict()
+        sc_meta["site"] = sc_meta["filename"].map(site_map).fillna("UNK")
+    else:
+        sc_meta["site"] = "UNK"
+
+    Y_SC = np.zeros((len(sc_meta), NUM_CLASSES), dtype=np.float32)
+    for i, row in sc_meta.iterrows():
+        matches = sc_labels_raw[(sc_labels_raw["filename"] == row["filename"]) &
+                                 (sc_labels_raw["start_sec"] == row["start_sec"])]
+        for _, m in matches.iterrows():
+            for lbl in str(m["primary_label"]).split(";"):
+                lbl = lbl.strip()
+                if lbl in LABEL2IDX:
+                    Y_SC[i, LABEL2IDX[lbl]] = 1.0
+    print(f"Soundscape labels: {len(sc_meta)} windows, {int(Y_SC.sum())} positives, "
+          f"{int((Y_SC.sum(axis=0) > 0).sum())} species")
+
+    # ============================================================
+    # ★ exp081: Aggregate labeled SS 5s -> 10s windows (max() merge)
+    # ============================================================
+    # Pair adjacent 5s chunks (start_sec, start_sec+5) -> 10s window at start_sec
+    # Result: 6 non-overlapping 10s windows per file (vs 12 5s windows)
+    print("[exp081] Aggregating labeled SS 5s -> 10s windows...")
+    sc_meta_orig = sc_meta.copy()
+    sc_meta_orig["_orig_idx"] = np.arange(len(sc_meta_orig))
+    Y_SC_orig = Y_SC.copy()
+    new_sc_rows = []
+    new_Y_SC_list = []
+    for fname, group in sc_meta_orig.groupby("filename"):
+        group_sorted = group.sort_values("start_sec").reset_index(drop=True)
+        # ★ exp082: Non-overlapping 20s windows: quads (0,1,2,3), (4,5,6,7), (8,9,10,11)
+        for k in range(0, len(group_sorted) - 3, 4):
+            idx_a = int(group_sorted.iloc[k]["_orig_idx"])
+            idx_b = int(group_sorted.iloc[k+1]["_orig_idx"])
+            idx_c = int(group_sorted.iloc[k+2]["_orig_idx"])
+            idx_d = int(group_sorted.iloc[k+3]["_orig_idx"])
+            start_sec_10s = float(group_sorted.iloc[k]["start_sec"])  # 20s window start
+            y_agg = np.maximum.reduce([Y_SC_orig[idx_a], Y_SC_orig[idx_b],
+                                       Y_SC_orig[idx_c], Y_SC_orig[idx_d]])
+            site_v = group_sorted.iloc[k].get("site", "UNK")
+            new_sc_rows.append({"filename": fname, "start_sec": start_sec_10s, "site": site_v})
+            new_Y_SC_list.append(y_agg)
+    sc_meta = pd.DataFrame(new_sc_rows).reset_index(drop=True)
+    Y_SC = np.array(new_Y_SC_list, dtype=np.float32)
+    print(f"  [exp081] After labeled SS 10s aggregation: {len(sc_meta)} windows, "
+          f"{int(Y_SC.sum())} positives, {int((Y_SC.sum(axis=0) > 0).sum())} species")
+
+    sc_files = sc_meta[["filename", "site"]].drop_duplicates().reset_index(drop=True)
+    gkf = GroupKFold(n_splits=N_FOLDS)
+    sc_files["fold"] = -1
+    for fold, (_, val_idx) in enumerate(gkf.split(sc_files, groups=sc_files["filename"])):
+        sc_files.loc[sc_files.index[val_idx], "fold"] = fold
+    file_to_fold = dict(zip(sc_files["filename"], sc_files["fold"]))
+    sc_meta["fold"] = sc_meta["filename"].map(file_to_fold).fillna(-1).astype(int)
+    non_s22_mask_sc = (sc_meta["site"].values != "S22")
+    print(f"Non-S22: {non_s22_mask_sc.sum()}/{len(sc_meta)}")
+else:
+    print("LABELS_PATH missing")
+    sc_meta = pd.DataFrame(columns=["filename", "start_sec", "site", "fold"])
+    Y_SC = np.zeros((0, NUM_CLASSES), dtype=np.float32)
+    non_s22_mask_sc = np.zeros(0, dtype=bool)
+
+# ★ R1 pseudo CSV (R2 の 3rd source)
+print(f"\nLoading R1 pseudo CSV: {PSEUDO_CSV_PATH}")
+_t0 = time.time()
+pseudo_df_full = pd.read_csv(PSEUDO_CSV_PATH)
+print(f"  loaded {len(pseudo_df_full)} rows in {time.time()-_t0:.1f}s")
+
+_label_cols_in_csv = [c for c in pseudo_df_full.columns if c in LABEL2IDX]
+assert len(_label_cols_in_csv) == NUM_CLASSES, (
+    f"pseudo CSV must contain all {NUM_CLASSES} species cols; got {len(_label_cols_in_csv)}"
+)
+Y_PSEUDO = pseudo_df_full[PRIMARY_LABELS].values.astype(np.float32)
+pseudo_meta = pseudo_df_full[["filename", "start_sec"]].copy().reset_index(drop=True)
+pseudo_meta["filename"] = pseudo_meta["filename"].astype(str)
+pseudo_meta["start_sec"] = pseudo_meta["start_sec"].astype(float)
+print(f"  Y_pseudo: {Y_PSEUDO.shape}, range=[{Y_PSEUDO.min():.4f}, {Y_PSEUDO.max():.4f}], "
+      f"mean={Y_PSEUDO.mean():.4f}")
+print(f"  pseudo_meta: {len(pseudo_meta)} rows, {pseudo_meta['filename'].nunique()} files")
+
+print("\nOK data loaded")
+
+# ============================================================
+# ★ exp081: Verify pseudo is 10s native (from exp081 R1 NB output)
+# ============================================================
+# Expected: 6 rows per file (start_sec 0, 10, 20, 30, 40, 50)
+# If pseudo CSV is from exp017 R1 (12 rows/file, 5s), need aggregation - WARN
+_n_per_file = pseudo_meta.groupby("filename").size()
+print(f"[exp081] Pseudo rows per file: mean={_n_per_file.mean():.1f}, median={_n_per_file.median():.0f}")
+if _n_per_file.median() == 3:
+    print("  [exp082] OK: 20s native pseudo (3 rows/file from exp082 R1)")
+elif _n_per_file.median() == 6:
+    print("  [exp082] WARN: 10s pseudo detected (6 rows/file). Aggregating to 20s...")
+    import numpy as _np_e82
+    import pandas as _pd_e82
+    _psd_full = pseudo_meta.copy()
+    _psd_full["_orig_idx"] = _np_e82.arange(len(_psd_full))
+    _psd_full = _psd_full.sort_values(["filename", "start_sec"]).reset_index(drop=True)
+    new_meta_rows = []
+    new_Y_20s = []
+    for fname, group in _psd_full.groupby("filename"):
+        group_sorted = group.reset_index(drop=True)
+        for k in range(0, len(group_sorted) - 1, 2):
+            idx_a = int(group_sorted.iloc[k]["_orig_idx"])
+            idx_b = int(group_sorted.iloc[k+1]["_orig_idx"])
+            start_sec_20s = float(group_sorted.iloc[k]["start_sec"])
+            y_agg = _np_e82.maximum(Y_PSEUDO[idx_a], Y_PSEUDO[idx_b])
+            new_meta_rows.append({"filename": fname, "start_sec": start_sec_20s})
+            new_Y_20s.append(y_agg)
+    pseudo_meta = _pd_e82.DataFrame(new_meta_rows).reset_index(drop=True)
+    Y_PSEUDO = _np_e82.array(new_Y_20s, dtype=_np_e82.float32)
+    print(f"  After 10s -> 20s aggregation: {len(pseudo_meta)} rows")
+elif _n_per_file.median() == 12:
+    print("  [exp082] WARN: 5s pseudo detected (12 rows/file). Aggregating to 20s (4x)...")
+    import numpy as _np_e82_b
+    import pandas as _pd_e82_b
+    _psd_full = pseudo_meta.copy()
+    _psd_full["_orig_idx"] = _np_e82_b.arange(len(_psd_full))
+    _psd_full = _psd_full.sort_values(["filename", "start_sec"]).reset_index(drop=True)
+    new_meta_rows = []
+    new_Y_20s = []
+    for fname, group in _psd_full.groupby("filename"):
+        group_sorted = group.reset_index(drop=True)
+        # 12 5s rows -> 3 20s rows (4x aggregation)
+        for k in range(0, len(group_sorted) - 3, 4):
+            idx_a = int(group_sorted.iloc[k]["_orig_idx"])
+            idx_b = int(group_sorted.iloc[k+1]["_orig_idx"])
+            idx_c = int(group_sorted.iloc[k+2]["_orig_idx"])
+            idx_d = int(group_sorted.iloc[k+3]["_orig_idx"])
+            start_sec_20s = float(group_sorted.iloc[k]["start_sec"])
+            y_agg = _np_e82_b.maximum.reduce([Y_PSEUDO[idx_a], Y_PSEUDO[idx_b],
+                                              Y_PSEUDO[idx_c], Y_PSEUDO[idx_d]])
+            new_meta_rows.append({"filename": fname, "start_sec": start_sec_20s})
+            new_Y_20s.append(y_agg)
+    pseudo_meta = _pd_e82_b.DataFrame(new_meta_rows).reset_index(drop=True)
+    Y_PSEUDO = _np_e82_b.array(new_Y_20s, dtype=_np_e82_b.float32)
+    print(f"  After 5s -> 20s aggregation: {len(pseudo_meta)} rows, Y shape {Y_PSEUDO.shape}")
+else:
+    print(f"  [exp081] WARN: unexpected pseudo row count {_n_per_file.median()}/file")
+print(f"  [exp081] Y_PSEUDO mean: {Y_PSEUDO.mean():.5f}, max: {Y_PSEUDO.max():.4f}")
+

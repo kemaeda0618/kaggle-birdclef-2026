@@ -1,0 +1,50 @@
+"""Push exp083 R1 inference NB (CPU sub).
+
+★ Uses kernel_sources (kernel output) instead of dataset_sources,
+   because birdclef2026-exp083-state Dataset upload failed (api.dataset_view bug).
+"""
+import json, os, sys, io, tempfile, shutil
+from pathlib import Path
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
+if os.name == "nt" and not os.environ.get("PYTHONUTF8"):
+    os.environ["PYTHONUTF8"] = "1"
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+if not os.environ.get("KAGGLE_API_TOKEN"):
+    _kgat = json.loads((Path.home() / ".kaggle" / "kaggle.json").read_text())["key"]
+    os.environ["KAGGLE_API_TOKEN"] = _kgat
+
+from kaggle.api.kaggle_api_extended import KaggleApi
+api = KaggleApi(); api.authenticate()
+
+NB = Path(__file__).with_name("nb_infer_r1.ipynb")
+USER = "maekeso"
+SLUG = "birdclef2026-exp083-infer-r1"
+TITLE = "birdclef2026 exp083 infer r1"
+
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    shutil.copy(NB, td / NB.name)
+    meta = {
+        "id": f"{USER}/{SLUG}",
+        "title": TITLE,
+        "code_file": NB.name,
+        "language": "python",
+        "kernel_type": "notebook",
+        "is_private": True,
+        "enable_internet": False,
+        "competition_sources": ["birdclef-2026"],
+        "dataset_sources": [],
+        # ★ kernel_sources: R1 ckpts は kernel output に存在
+        "kernel_sources": [
+            f"{USER}/birdclef2026-exp083-train-r1",
+        ],
+    }
+    (td / "kernel-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    r = api.kernels_push(str(td))
+    print("URL:", getattr(r, "url", None))
+    print("Version:", getattr(r, "version_number", None))
+    err = getattr(r, "error", "")
+    if err: print("Error:", err)

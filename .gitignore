@@ -68,3 +68,24 @@ kaggle.json
 tmp_*
 *.tmp
 *.log
+
+# === Added 2026-06-07 (post-comp cleanup push): large/regenerable & external ===
+_work/
+experiment/mislabel_viz/
+experiment/streamlit_analyze/
+_public_nb_pulls/
+survey/papers/
+# defensive: stray binaries that must never hit a public repo
+*.ogg
+*.wav
+*.flac
+*.mp3
+*.zip
+*.tar
+*.gz
+*.pdf
+
+# large regenerable label/cache CSVs (exceed GitHub limits)
+_pseudo_*.csv
+*_cache.csv
+pseudo_*.csv

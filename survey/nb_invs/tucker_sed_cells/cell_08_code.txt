@@ -1,0 +1,9 @@
+if DEBUG:
+    EPOCHS = 1
+    FOLDS = [0]
+    audio_cache_meta = audio_cache_meta.groupby("primary_label").head(3).reset_index(drop=True)
+    sc_cache_meta = sc_cache_meta.head(50)
+    Y_SC = Y_SC[:50]
+    non_s22_mask_sc = non_s22_mask_sc[:50]
+    print(f"DEBUG MODE: {len(audio_cache_meta)} focal, {len(sc_cache_meta)} sc, "
+          f"{EPOCHS} epoch, folds={FOLDS}")

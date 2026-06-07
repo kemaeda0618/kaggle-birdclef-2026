@@ -1,0 +1,35 @@
+# =================================================================
+# S7 -- EVALUATION SUMMARY
+# =================================================================
+
+if MODE != "train":
+    print("Skipping evaluation (MODE='infer')")
+else:
+
+    has = ~np.isnan(oof_ns22[:, 0])
+    if has.sum() > 0:
+        r_all = full_eval(Y_SC[has], oof_ns22[has], non_s22_mask_sc[has], TAXON_MASKS)
+        print("=" * 60)
+        print("OOF RESULTS (best-ns22 checkpoints)")
+        print("=" * 60)
+        print(f"  macro AUC (all):        {r_all['macro_auc_all']:.4f}")
+        print(f"  macro AUC (non-S22):    {r_all['non_s22_macro']:.4f}")
+        for t in ["Aves", "Amphibia", "Insecta", "Mammalia"]:
+            print(f"    {t:<12}: {r_all.get(f'non_s22_{t}', float('nan')):.4f}")
+    
+    # Per-epoch progression
+    print("\nPer-epoch pooled non-S22 AUC:")
+    fold_true, fold_ns22_m = {}, {}
+    for fk in range(N_FOLDS):
+        vm = sc_cache_meta["fold"].values == fk
+        fold_true[fk] = Y_SC[vm]
+        fold_ns22_m[fk] = non_s22_mask_sc[vm]
+    
+    n_eps = [len(all_hist[k]["val_preds"]) for k in range(N_FOLDS) if k in all_hist]
+    max_ep = min(n_eps) if n_eps else 0
+    for ep in range(max_ep):
+        pp = np.concatenate([all_hist[k]["val_preds"][ep] for k in range(N_FOLDS) if k in all_hist])
+        pt = np.concatenate([fold_true[k] for k in range(N_FOLDS) if k in all_hist])
+        pm = np.concatenate([fold_ns22_m[k] for k in range(N_FOLDS) if k in all_hist])
+        ns, _ = compute_macro_auc(pt, pp, mask=pm)
+        print(f"  Ep{ep:02d}: {ns:.4f}")

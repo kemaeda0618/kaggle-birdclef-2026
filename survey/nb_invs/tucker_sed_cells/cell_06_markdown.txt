@@ -1,0 +1,6 @@
+## S2 — Load Data
+
+We load three things:
+1. **Focal audio metadata** — the waveform cache CSV maps each XC/iNat recording to a `.pt` tensor file
+2. **Soundscape metadata** — pre-sliced 5-second windows from the 60-second train_soundscapes
+3. **Ground-truth labels** — expert annotations for labeled soundscape windows

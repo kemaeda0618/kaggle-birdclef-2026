@@ -1,0 +1,18 @@
+## S4 — Data Pipeline
+
+### Waveform loading
+
+The waveform cache stores audio as int16 PyTorch tensors (half the size of float32). Each focal recording and soundscape window is pre-sliced and saved as a separate `.pt` file, indexed by the metadata CSVs.
+
+### Augmentation pipeline
+
+Three simple waveform augmentations applied with probability 0.5 each:
+1. **Gain jitter** (±6 dB) — simulates varying recording distances
+2. **Additive noise** (10–30 dB SNR) — simulates environmental noise
+3. **Time shift** (±0.5s) — simulates temporal misalignment
+
+### MixUp strategy
+
+Two MixUp variants run independently:
+- **Focal-Focal MixUp**: Blends two focal recordings with Beta(0.4, 0.4) weighting. Labels are unioned (hard MixUp).
+- **Focal-Soundscape MixUp**: Blends a focal recording with a labeled soundscape window, bridging the domain gap between clean focal audio and noisy real-world soundscapes.

@@ -1,0 +1,8 @@
+## Inference loop
+
+For each 1-minute test soundscape:
+1. Decode to 12 non-overlapping 5-second chunks
+2. Compute mel spectrogram with librosa
+3. Run each fold’s ONNX model
+4. Blend: `0.5 × sigmoid(clip_logits) + 0.5 × sigmoid(frame_max_logits)`
+5. Average across folds

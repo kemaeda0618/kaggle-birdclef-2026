@@ -1,0 +1,62 @@
+=== Kernel info ===
+  ERR: 'KaggleApi' object has no attribute 'kernels_view'
+
+=== Recent submissions (look for exp082) ===
+  2026-05-28 01:13:03  score=0.949  | desc='' | file=submission.csv
+  2026-05-27 16:26:47  score=0.919  | desc='' | file=submission.csv
+  2026-05-27 14:55:13  score=0.919  | desc='' | file=submission.csv
+  2026-05-27 08:02:31  score=0.886  | desc='' | file=submission.csv
+  2026-05-27 00:20:25  score=0.883  | desc='' | file=submission.csv
+  2026-05-27 00:02:06  score=0.851  | desc='' | file=submission.csv
+  2026-05-26 18:28:24  score=0.931  | desc='' | file=submission.csv
+  2026-05-26 18:16:31  score=0.864  | desc='' | file=submission.csv
+  2026-05-26 15:00:38  score=0.847  | desc='' | file=submission.csv
+  2026-05-25 17:48:20  score=0.904  | desc='' | file=submission.csv
+  2026-05-25 16:18:01  score=0.858  | desc='' | file=submission.csv
+  2026-05-25 14:13:26  score=0.814  | desc='' | file=submission.csv
+  2026-05-25 12:04:56  score=  | desc='' | file=submission.csv
+  2026-05-25 10:04:23  score=  | desc='' | file=submission.csv
+  2026-05-24 13:39:38  score=0.950  | desc='' | file=submission.csv
+  2026-05-24 13:39:20  score=0.947  | desc='' | file=submission.csv
+  2026-05-24 07:50:58  score=0.950  | desc='' | file=submission.csv
+  2026-05-24 06:24:10  score=0.949  | desc='' | file=submission.csv
+  2026-05-24 05:39:51  score=0.776  | desc='' | file=submission.csv
+  2026-05-23 17:47:55  score=0.944  | desc='' | file=submission.csv
+
+=== Kernel output ===
+  birdclef2026-exp082-infer.log  3.8KB
+  submission.csv  1.8KB
+
+Last 60 log lines:
+  0.00s - Debugger warning: It seems that frozen modules are being used, which may
+  0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+  0.00s - to python to disable frozen modules.
+  0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+  0.00s - Debugger warning: It seems that frozen modules are being used, which may
+  0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+  0.00s - to python to disable frozen modules.
+  0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+  Python: 3.12.13 (main, Mar  4 2026, 09:23:07) [GCC 11.4.0], torch: 2.10.0+cpu, timm: 1.0.26
+  WINDOW: 20s, STEP: 5s
+  PADDED: 75s (7.5s lead + 60s + 7.5s trail)
+  N_WINDOWS_OUT: 12
+  Loading: /kaggle/input/datasets/maekeso/birdclef2026-exp082-weights/ckpt_best_ns22.pth (321.8 MB)
+    ckpt keys: ['epoch', 'fold', 'n_total_epochs', 'model_state', 'optimizer_state', 'scheduler_state', 'scaler_state', 'best_ns22', 'best_macro', 'history']
+    epoch: 20
+    val_ns22: 0.9142
+    val_macro: 0.9084
+    Load: missing=0, unexpected=0
+    Model params: 26.8M
+  Test files: 0
+  Inference DONE: 0.0 min, 0 rows
+  sub_df: (0, 235), mean=nan, NaN=0
+  Saved: /kaggle/working/submission.csv (0.0 MB)
+  Total time: 0.1 min
+  /usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\|'
+    cells[i][c] = re.sub('\\\\\|', '|', cell)
+  /usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\_'
+    text = re.sub(r'_', '\_', text) # Escape underscores in display text
+  [NbConvertApp] Converting notebook __notebook__.ipynb to notebook
+  [NbConvertApp] Writing 31232 bytes to __notebook__.ipynb
+  [NbConvertApp] Converting notebook __notebook__.ipynb to html
+  [NbConvertApp] Writing 348557 bytes to __results__.html

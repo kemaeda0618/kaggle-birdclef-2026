@@ -1,0 +1,20 @@
+{
+  "source": "HuggingFace public model",
+  "hf_model_id": "DBD-research-group/EfficientNet-B1-BirdSet-XCL",
+  "hf_revision": "2db0607ef5c950f7d1a679663c0f4b89d029db6a",
+  "task_note": "Packaged for offline Kaggle inference; kernel uses local_files_only=True.",
+  "files": {
+    "config.json": {
+      "bytes": 425306,
+      "sha256": "ff11fbdbf61aa7b757a57e6e0cfdc048fc4ccfe540bd1f0e9117cea07a5af14c"
+    },
+    "model.safetensors": {
+      "bytes": 76252648,
+      "sha256": "05a0143c2e8ad65c74d95afc961185730ccc04c85f17c83657744a98edf71eeb"
+    },
+    "README.md": {
+      "bytes": 5296,
+      "sha256": "6bca73daff5d36dae3d44f5a4f9b518d530cd6307cac21102fe86769b2b5e934"
+    }
+  }
+}

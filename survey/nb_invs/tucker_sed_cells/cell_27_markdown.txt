@@ -1,0 +1,28 @@
+## Notes
+
+### Architecture summary
+```
+waveform (B, 160000) at 32kHz
+  -> MelSpectrogram (B, 1, 256, 313)
+  -> EfficientNet-B0 backbone (B, 1280, F', T')
+  |-- [distillation branch] GAP -> Linear(1280, 1536) -> MSE vs Perch
+  +-- [classification branch, on h.detach()]
+       -> GeMFreq pool -> (B, 1280, T')
+       -> bottleneck 1280->512 with dropout
+       -> attention block -> clip_logits (B, 234) + frame_logits (B, T', 234)
+```
+
+### Key design decisions
+
+- **Stop-gradient separation**: The backbone learns Perch's representation via MSE. The SED head learns to classify using those features but can't corrupt them. This prevents the common failure mode where classification and distillation losses fight each other.
+
+- **SED attention pooling**: Instead of GAP (which dilutes brief vocalizations), learned attention weights focus on frames where species are calling. A 0.3-second call in a 5-second window gets appropriately upweighted.
+
+- **Dual output blending**: `0.5 x clip + 0.5 x frame_max` at inference. The clip prediction captures the overall scene; frame_max captures the strongest per-species activation. Their blend is more robust than either alone.
+
+- **Focal-Soundscape MixUp**: Mixing focal recordings (clean, single-species) with soundscape windows (noisy, multi-species) helps bridge the domain gap between training data types.
+
+### Reproducing results
+1. Create a Kaggle dataset from the waveform cache (the `audio/` subdirectory + metadata CSVs)
+2. Attach `perch-v2-no-dft-onnx` dataset for the Perch ONNX model
+3. Run with GPU accelerator (P100 or T4)

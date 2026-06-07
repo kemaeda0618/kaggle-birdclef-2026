@@ -1,0 +1,43 @@
+# =================================================================
+# INFERENCE -- Load ONNX sessions
+# =================================================================
+if MODE != "infer":
+    print("Skipping ONNX loading (MODE='train')")
+else:
+    import re, glob
+
+    def discover_folds(sed_dir):
+        pat = re.compile(r'sed_fold(\d+)\.onnx$')
+        folds = []
+        for fname in os.listdir(sed_dir):
+            m = pat.match(fname)
+            if m: folds.append(int(m.group(1)))
+        return sorted(folds)
+    
+    def make_session(onnx_path):
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = 4
+        so.inter_op_num_threads = 1
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        return ort.InferenceSession(onnx_path, sess_options=so, providers=providers)
+    
+    SED_DIR_CANDIDATES = [
+        str(OUT_DIR),
+        '/kaggle/input/datasets/tuckerarrants/bc2026-distilled-sed-public',
+    ]
+    SED_DIR = next((p for p in SED_DIR_CANDIDATES if os.path.isdir(p) and
+                    any(f.endswith('.onnx') and 'sed' in f for f in os.listdir(p))), None)
+    assert SED_DIR, f'No SED ONNX files found in {SED_DIR_CANDIDATES}'
+    
+    INF_FOLDS = discover_folds(SED_DIR)
+    assert INF_FOLDS, f'No sed_distill_fold*.onnx in {SED_DIR}'
+    print(f'Found {len(INF_FOLDS)} fold(s) in {SED_DIR}: {INF_FOLDS}')
+    
+    fold_sessions = []
+    for fold in INF_FOLDS:
+        p = f'{SED_DIR}/sed_fold{fold}.onnx'
+        sess = make_session(p)
+        fold_sessions.append(sess)
+        size_mb = os.path.getsize(p) / 1e6
+        print(f'  fold {fold}: {size_mb:5.1f}MB  providers={sess.get_providers()}')

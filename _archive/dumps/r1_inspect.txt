@@ -1,0 +1,22 @@
+Cell  0 [markdown] id=hdr                            L=  36 | # exp081 — exp017 + 10s window (Colab Pro G4) [TRAIN_DURATION] [VAL_DURATION] [SHARES] [pseudo_sc]
+Cell  1 [code    ] id=setup                          L=  48 | # ============================================================
+Cell  2 [code    ] id=dl_data                        L= 108 | # ============================================================ [PSEUDO_CSV]
+Cell  3 [code    ] id=config                         L= 117 | # ============================================================ [TRAIN_DURATION] [VAL_DURATION] [SHARES] [pseudo_sc] [PSEUDO_CSV]
+Cell  4 [code    ] id=load_data                      L= 160 | # ============================================================ [PSEUDO_CSV]
+Cell  5 [code    ] id=model                          L= 123 | # ============================================================
+Cell  6 [code    ] id=dataset                        L= 217 | # ============================================================ [pseudo_sc] [class FocalDS] [class LabeledSCDS] [class PseudoScDS]
+Cell  7 [code    ] id=eval                           L=  76 | # ============================================================
+Cell  8 [code    ] id=build_active                   L=  20 | # ============================================================ [pseudo_sc]
+Cell  9 [code    ] id=resume_or_init                 L=  63 | # ============================================================
+Cell 10 [code    ] id=val_prep                       L=  19 | # ============================================================
+Cell 11 [code    ] id=train_loop                     L= 183 | # ============================================================ [SHARES]
+Cell 12 [code    ] id=drive_mirror                   L=  15 | # ============================================================
+Cell 13 [code    ] id=summary                        L=  20 | # ============================================================
+Cell 14 [markdown] id=pseudo_hdr                     L=   4 | ## ─────── R2 Pseudo Phase ───────
+Cell 15 [code    ] id=pseudo_setup                   L=  44 | # ============================================================ [WINDOW]
+Cell 16 [code    ] id=pseudo_infer                   L=  66 | # ============================================================ [TRAIN_DURATION] [WINDOW]
+Cell 17 [code    ] id=pseudo_save                    L=  59 | # ============================================================
+Cell 18 [code    ] id=upload_state                   L=  88 | # ============================================================
+Cell 19 [code    ] id=terminate                      L=   9 | # ============================================================
+Cell 20 [code    ] id=-nDI_HIApZwj                   L=  67 | # Colab で実行: kaggle.json setup + R2 重み upload
+Cell 21 [code    ] id=NvV7PbEUpZbO                   L=   0 | (empty)

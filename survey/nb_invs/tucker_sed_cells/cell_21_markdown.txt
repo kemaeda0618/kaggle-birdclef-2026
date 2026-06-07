@@ -1,0 +1,3 @@
+## Load ONNX fold models
+
+Each ONNX model takes `(B, 1, 128, 313)` mel input and outputs `clip_logits (B, 234)` and `framewise_logits (B, T, 234)`.

@@ -1,0 +1,108 @@
+# =================================================================
+# S6 -- FOLD LOOP + ONNX EXPORT
+# =================================================================
+
+if MODE != "train":
+    print("Skipping training (MODE='infer')")
+    oof_ns22 = None
+    all_hist = {}
+else:
+
+    oof_ns22 = np.full((len(sc_cache_meta), NUM_CLASSES), np.nan, dtype=np.float32)
+    all_hist = {}
+    for fold_k in FOLDS:
+        print(f"\n{'='*60}")
+        print(f"FOLD {fold_k}")
+        print(f"{'='*60}")
+        vm = sc_cache_meta["fold"].values == fold_k
+        val_sc_df_k = sc_cache_meta[vm].reset_index(drop=True)
+    
+        best_ns22_state, best_macro_state, hist = train_fold(fold_k)
+        all_hist[fold_k] = hist
+    
+        mel_tf = MelSpecTransform().to(device)
+        val_wavs_k = _load_val_waveforms(val_sc_df_k)
+    
+        if best_macro_state is not None:
+            # Save PyTorch checkpoint
+            torch.save(best_macro_state, OUT_DIR / f"fold{fold_k}_best_ns22.pt")
+            m = make_model()
+            m.load_state_dict(best_macro_state, strict=False)
+            oof_ns22[vm] = _predict_from_waveforms(m, mel_tf, val_wavs_k)["blend"]
+    
+            # --- ONNX Export (Conv1d remap for stable tracing) ---
+            m.eval()
+            INF_N_MELS = 128
+            INF_N_FRAMES = VAL_SAMPLES // HOP_LENGTH + 1
+    
+            class SEDExportWrapper(nn.Module):
+                def __init__(self, backbone_name, num_classes, backbone_dim, hidden_dim=512):
+                    super().__init__()
+                    self.backbone = timm.create_model(
+                        backbone_name, pretrained=False, in_chans=1,
+                        num_classes=0, global_pool="", drop_path_rate=0.1,
+                    )
+                    self.gem_freq = GeMFreqPool(p_init=3.0)
+                    self.dense_drop1 = nn.Dropout(0.25)
+                    self.dense_conv = nn.Conv1d(backbone_dim, hidden_dim, 1)
+                    self.dense_relu = nn.ReLU(inplace=True)
+                    self.dense_drop2 = nn.Dropout(0.5)
+                    self.att = nn.Conv1d(hidden_dim, num_classes, 1)
+                    self.cla = nn.Conv1d(hidden_dim, num_classes, 1)
+    
+                def forward(self, mel):
+                    h = self.backbone(mel)
+                    h = self.gem_freq(h)
+                    h = self.dense_drop1(h)
+                    h = self.dense_conv(h)
+                    h = self.dense_relu(h)
+                    h = self.dense_drop2(h)
+                    norm_att = torch.softmax(torch.tanh(self.att(h)), dim=-1)
+                    framewise = self.cla(h)
+                    clip = torch.sum(norm_att * framewise, dim=2)
+                    return clip, framewise.permute(0, 2, 1)
+    
+            def load_and_remap_state(export_model, trained_state):
+                remap = {}
+                for k, v in trained_state.items():
+                    if k.startswith("distill_head."):
+                        continue
+                    if k == "dense.1.weight":
+                        remap["dense_conv.weight"] = v.unsqueeze(-1)
+                    elif k == "dense.1.bias":
+                        remap["dense_conv.bias"] = v
+                    else:
+                        remap[k] = v
+                export_model.load_state_dict(remap, strict=False)
+    
+            export_model = SEDExportWrapper(
+                BACKBONE_NAME, NUM_CLASSES, m.backbone_dim
+            ).to(device)
+            load_and_remap_state(export_model, best_macro_state)
+            export_model.eval()
+    
+            dummy_mel = torch.randn(1, 1, INF_N_MELS, INF_N_FRAMES).to(device)
+            onnx_path = OUT_DIR / f"sed_distill_fold{fold_k}.onnx"
+            torch.onnx.export(
+                export_model, dummy_mel, str(onnx_path),
+                input_names=["mel"],
+                output_names=["clip_logits", "framewise_logits"],
+                dynamic_axes={"mel": {0: "batch"},
+                              "clip_logits": {0: "batch"},
+                              "framewise_logits": {0: "batch"}},
+                opset_version=17,
+            )
+    
+            # Verify
+            _sess = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
+            _onnx_out = _sess.run(None, {'mel': dummy_mel.cpu().numpy()})
+            with torch.no_grad():
+                _ref_clip, _ref_frame = export_model(dummy_mel)
+            _diff = np.abs(_ref_clip.cpu().numpy() - _onnx_out[0]).max()
+            print(f"  ONNX verify: max|diff|={_diff:.3e}")
+            assert _diff < 1e-3, f"ONNX export diverged: {_diff}"
+            del _sess
+    
+            size_mb = onnx_path.stat().st_size / 1e6
+            print(f"  Exported {onnx_path.name} ({size_mb:.1f} MB)")
+            del m, export_model

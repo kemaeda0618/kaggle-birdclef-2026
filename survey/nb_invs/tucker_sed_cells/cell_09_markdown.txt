@@ -1,0 +1,17 @@
+## S3 — Model Architecture
+
+### SED (Sound Event Detection) head design
+
+Instead of Global Average Pooling (GAP), which dilutes a brief vocalization across the full 5-second window, the SED head makes **per-frame predictions** and aggregates them via learned attention weights. A species that calls for 0.3 seconds gets a sharp attention spike at those frames, rather than being averaged with 4.7 seconds of background.
+
+### Distillation head
+
+A separate branch applies GAP to the raw backbone features and projects them to Perch’s 1536-d embedding space. This branch receives all backbone gradients via MSE loss against frozen Perch embeddings. The SED classification head operates on `h.detach()` — it only shapes the attention and frame-level classifier, never pulling the backbone away from Perch’s representation.
+
+### Why stop-gradient?
+
+Without the stop-gradient, the classification loss and distillation loss would fight over the backbone’s feature representation. With it, the backbone is purely a “Perch student” — learning to reproduce Perch’s rich 14,795-species embedding geometry. The SED head then learns to classify using those frozen-quality features.
+
+Two model variants are implemented:
+- **V1**: Simple frequency-mean pooling + attention block
+- **V2** (default): Generalized Mean (GeM) frequency pooling + 512-d bottleneck + attention block — inspired by the BirdCLEF 2025 first-place solution

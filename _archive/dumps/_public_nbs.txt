@@ -1,0 +1,139 @@
+=== Search public NBs by competition ===
+
+--- Sort by votes (top voted) ---
+  votes=  0 | Xie Xin                   | pantanal-distill-birdclef2026-ONNX
+    ref: dingjiarun/pantanal-distill-birdclef2026-onnx
+  votes=  0 | Yusuf Murtaza             | pantanal-distill-birdclef2026-Improvement
+    ref: yusufmurtaza01/pantanal-distill-birdclef2026-improvement
+  votes=  0 | Imaad Mahmood             | BirdCLEF+ 2026 — Perch v2 + ProtoSSM · 0.925
+    ref: imaadmahmood/birdclef-2026-perch-v2-protossm-0-925
+  votes=  0 | Maryna Borovska           | BirdCLEF+ 26 | Two-Pass SSM + Advanced PP
+    ref: marynaborovska/birdclef-26-two-pass-ssm-advanced-pp
+  votes=  0 | zorojuro                  | BirdCLEF 2026 — ONNX Perch + Sequence Modeling
+    ref: vyankteshdwivedi/birdclef-2026-onnx-perch-sequence-modeling
+  votes=  0 | Amaranta                  | BirdCLEF+ 2026 Gate Fake008 Head0015
+    ref: ulyanovantonamaranta/birdclef-2026-gate-fake008-head0015
+  votes=  0 | g john rao                | perch_v2 starter: train + infer
+    ref: jaejohn/perch-v2-starter-train-infer
+  votes=  0 | yash bhaskar              | pantanal-distill-birdclef2026-Improvement
+    ref: yash9439/pantanal-distill-birdclef2026-improvement
+  votes=  0 | yukiZ                     | Bird26|REPRODUCE|Perch+ProtoSSM+ResSSM|INF/TRAIN
+    ref: hideyukizushi/bird26-reproduce-perch-protossm-resssm-inf-train
+  votes=  0 | Patrick Kamongi           | pantanal-distill-birdclef2026
+    ref: kamongi/pantanal-distill-birdclef2026
+  votes=  0 | Raunak Dey                | BirdCLEF+ 2026 | Multi-Model Ensemble
+    ref: raunakdey07/birdclef-2026-multi-model-ensemble
+  votes=  0 | Tucker Arrants            | BC2026 Distilled-SED
+    ref: tuckerarrants/bc2026-distilled-sed
+  votes=  0 | 没落者                       | BirdCLEF+ 2026 Iter-Pseudo Perch+SED LB 0.934 s
+    ref: needless090/birdclef-2026-iter-pseudo-perch-sed-lb-0-934-s
+  votes=  0 | Konstantin Dmitriev       | BirdCLEF26: Google Perch Starter
+    ref: kdmitrie/birdclef26-google-perch-starter
+  votes=  0 | Derek                     | birdclef 2026 exp019 eos4 rank power 06
+    ref: sunderekkiz/birdclef-2026-exp019-eos4-rank-power-06
+  votes=  0 | F.A.Nina                  | BirdCLEF+ 2026 | EoS.4
+    ref: nina2025/birdclef-2026-eos-4
+  votes=  0 | cliff376                  | BC26 Public Gate Combo PC010 V2
+    ref: cliff376/bc26-public-gate-combo-pc010-v2
+  votes=  0 | Raunak Dey                | BirdCLEF+ 2026 V6
+    ref: raunakdey07/birdclef-2026-v6
+  votes=  0 | Antoine Masq              | BirdCLEF 2026 - PyTorch Baseline [Inference]
+    ref: antoinemasq/birdclef-2026-pytorch-baseline-inference
+  votes=  0 | Tawara                    | BirdCLEF+2026: HGNetV2-B0 Baseline [Training]
+    ref: ttahara/birdclef-2026-hgnetv2-b0-baseline-training
+
+--- Sort by relevance (popular) ---
+  votes=  0 | BirdCLEF+ 2026 Improved Baseline NETpipelene V2
+    ref: rauffauzanrambe/birdclef-2026-improved-baseline-netpipelene-v2
+  votes=  0 | 0950 Replay
+    ref: yaroslavkholmirzayev/0950-replay
+  votes=  0 | BirdCLEF 1st submission
+    ref: meryemaltundal/birdclef-1st-submission
+  votes=  0 | birdclef submission2
+    ref: jungchanryu/birdclef-submission2
+  votes=  0 | Neslihan Nur Yilmaz
+    ref: neslihannuryilmaz/neslihan-nur-yilmaz
+  votes=  0 | bc26 gendaijin junseong eos6 may23
+    ref: beicicc/bc26-gendaijin-junseong-eos6-may23
+  votes=  0 | BirdCLEF+ 2026 | Ensemble: 0.950 
+    ref: anthonytherrien/birdclef-2026-ensemble-0-950
+  votes=  0 | BC2026 Karnak HourPrior L00
+    ref: sultanalgizani/bc2026-karnak-hourprior-l00
+  votes=  0 | birdclef 2026 exp013 eos8 sidecar
+    ref: ryutoyoda/birdclef-2026-exp013-eos8-sidecar
+  votes=  0 | BirdCLEF+ 2026 | Hier Tax (claude fork)
+    ref: fleongg/birdclef-2026-hier-tax-claude-fork
+  votes=  0 | BirdCLEF+ 2026 | EoS.9 (claude fork)
+    ref: fleongg/birdclef-2026-eos-9-claude-fork
+  votes=  0 | BirdCLEF+ 2026 | Add Transformer
+    ref: liuyanfeng/birdclef-2026-add-transformer
+  votes=  0 | test birdclef-2026-yaroslav-v221-tax
+    ref: mtoshidesu/test-birdclef-2026-yaroslav-v221-tax
+  votes=  0 | BirdCLEF+ 2026-development(try Transformer)
+    ref: liuyanfeng/birdclef-2026-development-try-transformer
+  votes=  0 | BC2026 Claude HGNet Baseline Fork
+    ref: joriahmed/bc2026-claude-hgnet-baseline-fork
+
+--- Sort by hotness (recent activity) ---
+  votes=  0 | BirdCLEF+ 2026 Improved Baseline NETpipelene V2
+    ref: rauffauzanrambe/birdclef-2026-improved-baseline-netpipelene-v2
+  votes=  0 | 0950 Replay
+    ref: yaroslavkholmirzayev/0950-replay
+  votes=  0 | BirdCLEF 1st submission
+    ref: meryemaltundal/birdclef-1st-submission
+  votes=  0 | birdclef submission2
+    ref: jungchanryu/birdclef-submission2
+  votes=  0 | Neslihan Nur Yilmaz
+    ref: neslihannuryilmaz/neslihan-nur-yilmaz
+  votes=  0 | bc26 gendaijin junseong eos6 may23
+    ref: beicicc/bc26-gendaijin-junseong-eos6-may23
+  votes=  0 | BirdCLEF+ 2026 | Ensemble: 0.950 
+    ref: anthonytherrien/birdclef-2026-ensemble-0-950
+  votes=  0 | BC2026 Karnak HourPrior L00
+    ref: sultanalgizani/bc2026-karnak-hourprior-l00
+  votes=  0 | birdclef 2026 exp013 eos8 sidecar
+    ref: ryutoyoda/birdclef-2026-exp013-eos8-sidecar
+  votes=  0 | BirdCLEF+ 2026 | Hier Tax (claude fork)
+    ref: fleongg/birdclef-2026-hier-tax-claude-fork
+  votes=  0 | BirdCLEF+ 2026 | EoS.9 (claude fork)
+    ref: fleongg/birdclef-2026-eos-9-claude-fork
+  votes=  0 | BirdCLEF+ 2026 | Add Transformer
+    ref: liuyanfeng/birdclef-2026-add-transformer
+  votes=  0 | test birdclef-2026-yaroslav-v221-tax
+    ref: mtoshidesu/test-birdclef-2026-yaroslav-v221-tax
+  votes=  0 | BirdCLEF+ 2026-development(try Transformer)
+    ref: liuyanfeng/birdclef-2026-development-try-transformer
+  votes=  0 | BC2026 Claude HGNet Baseline Fork
+    ref: joriahmed/bc2026-claude-hgnet-baseline-fork
+
+--- Sort by date created (newest) ---
+  votes=  0 | BirdCLEF2026 exp003 Perch+MLP
+    ref: fukuchikeita/birdclef2026-exp003-perch-mlp
+  votes=  0 | BirdCLEF 1st submission
+    ref: meryemaltundal/birdclef-1st-submission
+  votes=  0 | BC2026 EB1 Probe
+    ref: hassanalgizani/bc2026-eb1-probe
+  votes=  0 | BC2026 Kitchen L15 EB20
+    ref: hassanalgizani/bc2026-kitchen-l15-eb20
+  votes=  0 | BC2026 Kitchen L00 EB10
+    ref: hassanalgizani/bc2026-kitchen-l00-eb10
+  votes=  0 | BC2026 Kitchen L15 EB10
+    ref: hassanalgizani/bc2026-kitchen-l15-eb10
+  votes=  0 | BC2026 EB1 Standalone
+    ref: hassanalgizani/bc2026-eb1-standalone
+  votes=  0 | BC2026 Karnak HourPrior L00
+    ref: sultanalgizani/bc2026-karnak-hourprior-l00
+  votes=  0 | BC2026 Karnak HourPrior L05
+    ref: hanijezo/bc2026-karnak-hourprior-l05
+  votes=  0 | BC2026 Karnak HourPrior L30
+    ref: shahadaljayzani/bc2026-karnak-hourprior-l30
+  votes=  0 | BC2026 Karnak HourPrior L15
+    ref: hassan1417/bc2026-karnak-hourprior-l15
+  votes=  0 | bc26-v2538d-smart-hybrid
+    ref: thomaszyxu/bc26-v2538d-smart-hybrid
+  votes=  0 | birdclef2026-day0528-karnak-hier
+    ref: gendaijin/birdclef2026-day0528-karnak-hier
+  votes=  0 | birdclef2026-day0529-raunak-v9-latest
+    ref: gendaijin/birdclef2026-day0529-raunak-v9-latest
+  votes=  0 | BirdCLEF+ 2026 | Hier Tax (claude fork)
+    ref: fleongg/birdclef-2026-hier-tax-claude-fork

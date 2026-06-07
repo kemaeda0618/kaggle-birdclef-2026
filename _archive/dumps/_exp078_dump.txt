@@ -1,0 +1,438 @@
+
+================================================================================
+# CELL id=v313_00
+================================================================================
+# ── Cell 0: Install ONNX Runtime + TF 2.20 ────────────────────────────
+import subprocess, sys, os
+from pathlib import Path
+
+INPUT_ROOT = Path("/kaggle/input")
+
+def find_wheel(pattern):
+    for p in INPUT_ROOT.rglob(pattern):
+        return p
+    raise FileNotFoundError(pattern)
+
+# Try ONNX first (150x faster than TF SavedModel)
+ONNX_WHL = Path("/kaggle/input/datasets/rishikeshjani/perch-onnx-for-birdclef-2026/onnxruntime-1.24.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl")
+if ONNX_WHL.exists():
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", str(ONNX_WHL)], check=True)
+    print("ONNX Runtime installed")
+
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps",
+                str(find_wheel("tensorboard-2.20.0-*.whl"))], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps",
+                str(find_wheel("tensorflow-2.20.0-*.whl"))], check=True)
+print("TF 2.20 installed")
+
+try:
+    import onnxruntime as ort
+    _ONNX_AVAILABLE = True
+    print("ONNX Runtime available ✅")
+except ImportError:
+    _ONNX_AVAILABLE = False
+    print("ONNX not available, falling back to TF")
+
+================================================================================
+# CELL id=bridge
+================================================================================
+# === exp039: Bridge — build audio_cache for Tucker SED + exp029, map probs to exp031 blend format ===
+import soundfile as sf
+import librosa as _librosa_bridge
+import torch.nn as nn
+import torch.nn.functional as F
+
+# === exp039: Constants used by exp031 blend code (need to be defined here) ===
+# FCS (file_confidence_scale): top_K=2, power=0.4 standard from Karnakbayev V18 pipeline
+FCS_TOP_K = 2
+FCS_POWER = 0.4
+
+# Build audio_cache: list of 60s raw float32 waveforms per test file
+FILE_SAMPLES_60s = SR * 60
+audio_cache = []
+t0_audio = time.time()
+print(f"\n[exp039] Building audio_cache from {len(test_paths)} test files (for Tucker + exp029)...")
+for fi, fp in enumerate(test_paths):
+    try:
+        wav, sr_read = sf.read(str(fp), dtype="float32", always_2d=False)
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+        if sr_read != SR:
+            wav = _librosa_bridge.resample(wav, orig_sr=sr_read, target_sr=SR)
+    except Exception:
+        wav, _ = _librosa_bridge.load(str(fp), sr=SR, mono=True)
+        wav = wav.astype(np.float32)
+
+    target_len = FILE_SAMPLES_60s
+    if len(wav) < target_len:
+        wav = np.pad(wav, (0, target_len - len(wav)))
+    elif len(wav) > target_len:
+        wav = wav[:target_len]
+    audio_cache.append(wav.astype(np.float32))
+    if (fi + 1) % 50 == 0 or fi == 0 or fi == len(test_paths) - 1:
+        print(f"  audio_cache [{fi+1}/{len(test_paths)}] {time.time()-t0_audio:.0f}s")
+print(f"audio_cache built: {len(audio_cache)} files in {time.time()-t0_audio:.0f}s")
+
+# Bridge probs_exp037 → probs_exp010 (var name kept for exp031 blend code reuse)
+all_row_ids = meta_te["row_id"].astype(str).tolist()
+n_test_rows = len(all_row_ids)
+WINDOW_SAMPLES = SR * 5  # 32000 * 5 = 160000
+WINDOW_SEC = 5
+assert n_test_rows % N_WINDOWS == 0, f"n_test_rows {n_test_rows} not divisible by N_WINDOWS {N_WINDOWS}"
+probs_exp010 = probs_exp037.reshape(-1, N_WINDOWS, N_CLASSES).astype(np.float32)
+print(f"probs_exp010 (=exp037 reshaped): {probs_exp010.shape}")
+
+# BASE etc. (exp037 already defines BASE, reuse)
+TEST_DIR = BASE / "test_soundscapes"
+TRAIN_SC_DIR = BASE / "train_soundscapes"
+test_files = [str(p) for p in test_paths]  # convert to str list for exp031 code
+
+# START reference (used by blend cell)
+START = time.time() - (time.time() - _WALL_START)  # cumulative wall time from exp037
+
+# onnxruntime as ort (already imported in exp037, but reaffirm)
+import onnxruntime as ort
+
+# PRIMARY_LABELS — exp037 already defines it
+print(f"PRIMARY_LABELS: {len(PRIMARY_LABELS)}")
+
+
+================================================================================
+# CELL id=sed-infer
+================================================================================
+# === Stage B: Tucker 5-fold SED ONNX ensemble ===
+import librosa
+from scipy.ndimage import gaussian_filter1d
+
+N_MELS_SED = 256
+N_FFT_SED  = 2048
+HOP_SED    = 512
+FMIN_SED   = 20
+FMAX_SED   = 16000
+TOP_DB_SED = 80
+
+
+def find_sed_dir():
+    hits = sorted(Path("/kaggle/input").rglob("sed_fold0.onnx"))
+    assert hits, "sed_fold0.onnx not found — attach tuckerarrants/bc2026-distilled-sed-public"
+    return hits[0].parent
+
+
+def make_sed_session(path):
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = 4
+    so.inter_op_num_threads = 1
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    return ort.InferenceSession(str(path), sess_options=so,
+                                providers=["CPUExecutionProvider"])
+
+
+def audio_to_mel(chunks):
+    mels = []
+    for x in chunks:
+        s = librosa.feature.melspectrogram(
+            y=x, sr=SR, n_fft=N_FFT_SED, hop_length=HOP_SED,
+            n_mels=N_MELS_SED, fmin=FMIN_SED, fmax=FMAX_SED, power=2.0,
+        )
+        s = librosa.power_to_db(s, top_db=TOP_DB_SED)
+        s = (s - s.mean()) / (s.std() + 1e-6)
+        mels.append(s)
+    return np.stack(mels)[:, None].astype(np.float32)
+
+
+def sigmoid_sed(x):
+    return (1.0 / (1.0 + np.exp(-np.clip(x, -50, 50)))).astype(np.float32)
+
+
+sed_dir = find_sed_dir()
+sed_fold_paths = sorted(sed_dir.glob("sed_fold*.onnx"),
+                        key=lambda p: int(re.search(r"sed_fold(\d+)", p.name).group(1)))
+sed_sessions = [make_sed_session(p) for p in sed_fold_paths]
+print(f"SED dir: {sed_dir}")
+print(f"SED folds loaded: {[p.name for p in sed_fold_paths]}")
+
+t0 = time.time()
+probs_sed = []   # (N_files, 12, 234)
+for fi, raw_60s in enumerate(audio_cache):
+    chunks = raw_60s.reshape(N_WINDOWS, WINDOW_SAMPLES)
+    mel = audio_to_mel(chunks)
+    p_sum = np.zeros((N_WINDOWS, N_CLASSES), dtype=np.float32)
+    for sess in sed_sessions:
+        outs = sess.run(None, {sess.get_inputs()[0].name: mel})
+        clip_logits = outs[0]
+        frame_max = outs[1].max(axis=1)
+        p_sum += 0.5 * sigmoid_sed(clip_logits) + 0.5 * sigmoid_sed(frame_max)
+    p_mean = p_sum / len(sed_sessions)
+    p_mean = gaussian_filter1d(p_mean, sigma=0.65, axis=0, mode="nearest").astype(np.float32)
+    probs_sed.append(p_mean)
+    if (fi + 1) % 10 == 0 or fi == len(audio_cache) - 1:
+        elapsed = time.time() - t0
+        print(f"  SED [{fi+1}/{len(audio_cache)}] {elapsed:.0f}s")
+
+probs_sed = np.stack(probs_sed)
+print(f"SED done: {probs_sed.shape} in {time.time()-t0:.0f}s")
+
+================================================================================
+# CELL id=e29-infer
+================================================================================
+# === exp029 R3 (eca_nfnet_l1 + Perch distill) inference ===
+# Use audio_cache built by NB4 stage (60s raw per file).
+# Output probs_e17 of shape (N_files, 12, N_CLASSES) in sigmoid space, gaussian smoothed.
+import timm
+import torchaudio
+
+# ---- Locate exp017 R2 ckpt (Dataset 経由) ----
+E17_STATE_DIR = None
+for _p in [
+    Path("/kaggle/input/datasets/maekeso/birdclef2026-exp029-l1-single"),
+    Path("/kaggle/input/birdclef2026-exp029-l1-single"),
+]:
+    if _p.exists() and (any(_p.rglob("r3_fold0_ckpt_best_ns22.pth"))
+                        or any(_p.rglob("r2_ckpt_best_ns22.pth"))
+                        or any(_p.rglob("ckpt_best_ns22.pth"))
+                        or any(_p.rglob("ckpt_latest*.pth"))):
+        E17_STATE_DIR = _p; break
+if E17_STATE_DIR is None:
+    for _hit in Path("/kaggle/input").rglob("r3_fold0_ckpt_best_ns22.pth"):
+        E17_STATE_DIR = _hit.parent; break
+if E17_STATE_DIR is None:
+    for _hit in Path("/kaggle/input").rglob("r2_ckpt_best_ns22.pth"):
+        E17_STATE_DIR = _hit.parent; break
+if E17_STATE_DIR is None:
+    for _hit in Path("/kaggle/input").rglob("ckpt_best_ns22.pth"):
+        E17_STATE_DIR = _hit.parent; break
+assert E17_STATE_DIR is not None, "exp031: exp029 ckpt not found (looked for r3_fold0_ckpt_best_ns22.pth)"
+print(f"exp031 (exp029 ckpt) state dir: {E17_STATE_DIR}")
+
+E17_CKPT = None
+for _name in [
+    "r3_fold0_ckpt_best_ns22.pth",   # exp029 R3 fold0 (val 0.9409, LB 0.923)
+    "r3_fold0_ckpt_best_macro.pth",
+    "r3_fold0_ckpt_latest.pth",
+    "ckpt_best_ns22.pth",      # R1 v2 fallback (val 0.9166)
+    "ckpt_best_macro.pth",
+    "ckpt_latest.pth",
+]:
+    _hits = list(E17_STATE_DIR.rglob(_name))
+    if _hits:
+        E17_CKPT = _hits[0]; break
+assert E17_CKPT is not None, f"No ckpt under {E17_STATE_DIR}"
+print(f"  ckpt: {E17_CKPT.name} ({E17_CKPT.stat().st_size/1e6:.1f}MB)")
+
+# ---- exp017 config (must match training) ----
+E17_BACKBONE = "eca_nfnet_l1"  # exp029 student (l0 から +30% params)
+E17_N_MELS   = 256
+E17_N_FFT    = 2048
+E17_HOP      = 512
+E17_FMIN     = 20
+E17_FMAX     = 16000
+E17_TRAIN_SAMPLES = SR * 5
+E17_USE_DISTILL = True
+E17_PERCH_DIM = 1536
+
+# ---- Architecture (copy of exp017 BirdSEDModel) ----
+class _E17MelTF(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mel_spec = torchaudio.transforms.MelSpectrogram(
+            sample_rate=SR, n_fft=E17_N_FFT, hop_length=E17_HOP,
+            n_mels=E17_N_MELS, f_min=E17_FMIN, f_max=E17_FMAX, power=2.0,
+        )
+        self.db = torchaudio.transforms.AmplitudeToDB(top_db=80)
+    def forward(self, x):
+        return self.db(self.mel_spec(x))
+
+
+class _E17GeMFreq(nn.Module):
+    def __init__(self, p_init=3.0, eps=1e-6):
+        super().__init__()
+        self.p = nn.Parameter(torch.tensor(float(p_init)))
+        self.eps = eps
+    def forward(self, x):
+        p = self.p.clamp(min=1.0)
+        x = x.clamp(min=self.eps).pow(p)
+        x = x.mean(dim=2)
+        return x.pow(1.0 / p)
+
+
+class _E17DistillHead(nn.Module):
+    def __init__(self, backbone_dim, embed_dim=1536):
+        super().__init__()
+        self.proj = nn.Linear(backbone_dim, embed_dim)
+    def forward(self, feature_map):
+        return self.proj(feature_map.mean(dim=[2, 3]))
+
+
+class _E17SED(nn.Module):
+    def __init__(self, backbone_name=E17_BACKBONE, num_classes=N_CLASSES,
+                 drop_path_rate=0.1, hidden_dim=512):
+        super().__init__()
+        self.backbone = timm.create_model(
+            backbone_name, pretrained=False, in_chans=1,
+            num_classes=0, global_pool="", drop_path_rate=drop_path_rate,
+        )
+        with torch.no_grad():
+            n_tf = E17_TRAIN_SAMPLES // E17_HOP + 1
+            dummy = torch.randn(1, 1, E17_N_MELS, n_tf)
+            feat = self.backbone(dummy)
+            self.backbone_dim = feat.shape[1]
+        self.gem_freq = _E17GeMFreq(p_init=3.0)
+        self.dense = nn.Sequential(
+            nn.Dropout(0.25),
+            nn.Linear(self.backbone_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+        )
+        self.att = nn.Conv1d(hidden_dim, num_classes, kernel_size=1, bias=True)
+        self.cla = nn.Conv1d(hidden_dim, num_classes, kernel_size=1, bias=True)
+        if E17_USE_DISTILL:
+            self.distill_head = _E17DistillHead(self.backbone_dim, E17_PERCH_DIM)
+    def forward(self, x, return_framewise=False):
+        h = self.backbone(x)
+        h_cls = h.detach() if E17_USE_DISTILL else h
+        h_cls = self.gem_freq(h_cls)
+        h_cls = h_cls.permute(0, 2, 1)
+        h_cls = self.dense(h_cls)
+        h_cls = h_cls.permute(0, 2, 1)
+        norm_att = torch.softmax(torch.tanh(self.att(h_cls)), dim=-1)
+        framewise_logits = self.cla(h_cls)
+        clip_logits = torch.sum(norm_att * framewise_logits, dim=2)
+        if return_framewise:
+            return clip_logits, framewise_logits.permute(0, 2, 1)
+        return clip_logits
+
+
+# ---- Load weights ----
+try:
+    _state = torch.load(str(E17_CKPT), map_location="cpu", weights_only=False)
+except TypeError:
+    _state = torch.load(str(E17_CKPT), map_location="cpu")
+print(f"  ckpt epoch={_state.get('epoch')}, best_ns22={_state.get('best_ns22', float('nan')):.4f}")
+
+e17_model = _E17SED().to(torch.device("cpu"))
+e17_model.load_state_dict(_state["model_state"], strict=False)
+e17_model.eval()
+e17_mel_tf = _E17MelTF().to(torch.device("cpu"))
+print(f"  e17 loaded: {sum(p.numel() for p in e17_model.parameters())/1e6:.1f}M params")
+
+# ---- Inference using audio_cache (60s raw per file) ----
+t0 = time.time()
+probs_e17 = []  # (N_files, 12, N_CLASSES)
+with torch.no_grad():
+    for _fi, _raw_60s in enumerate(audio_cache):
+        _chunks = _raw_60s.reshape(N_WINDOWS, WINDOW_SAMPLES).astype(np.float32)
+        _wav_t = torch.from_numpy(_chunks).unsqueeze(1)        # (12, 1, 160000)
+        _mel = e17_mel_tf(_wav_t)
+        # per-instance standardize (same as exp017 training/infer)
+        for _i in range(_mel.size(0)):
+            _mel[_i] = (_mel[_i] - _mel[_i].mean()) / (_mel[_i].std() + 1e-6)
+        _clip, _frame = e17_model(_mel, return_framewise=True)
+        _frame_max = _frame.max(dim=1).values
+        # sigmoid space blend (mirrors Tucker recipe: 0.5*sigmoid(clip) + 0.5*sigmoid(frame_max))
+        _p_clip   = torch.sigmoid(_clip).numpy().astype(np.float32)
+        _p_frame  = torch.sigmoid(_frame_max).numpy().astype(np.float32)
+        _p_mean   = 0.5 * _p_clip + 0.5 * _p_frame              # (12, N_CLASSES)
+        # gaussian smooth across windows (Tucker sigma=0.65)
+        _p_smooth = gaussian_filter1d(_p_mean, sigma=0.65, axis=0, mode="nearest").astype(np.float32)
+        probs_e17.append(_p_smooth)
+        if (_fi + 1) % 10 == 0 or _fi == len(audio_cache) - 1:
+            print(f"  e17 [{_fi+1}/{len(audio_cache)}] {time.time()-t0:.0f}s")
+
+probs_e17 = np.stack(probs_e17).astype(np.float32)
+print(f"e17 done: {probs_e17.shape} in {time.time()-t0:.0f}s")
+
+
+================================================================================
+# CELL id=blend
+================================================================================
+# === Stage C: 3-way rank blend (NB4 + Tucker + exp029) + Sonotype mirror + submission ===
+# exp031 ratio config (w35-40-25, slot3 = exp029 instead of e17):
+BLEND_W_E10  = 0.35   # NB4 v7 weight
+BLEND_W_SED  = 0.40   # Tucker public SED weight
+BLEND_W_E17  = 0.25   # exp029 R3 (eca_nfnet_l1) weight — note var name kept "E17" for code reuse
+USE_SED_PRE_AVG = False
+
+assert abs(BLEND_W_E10 + BLEND_W_SED + BLEND_W_E17 - 1.0) < 1e-6, \
+    "blend weights must sum to 1.0"
+
+flat_e10 = probs_exp010.reshape(-1, probs_exp010.shape[-1])
+flat_sed = probs_sed.reshape(-1, probs_sed.shape[-1])
+flat_e17 = probs_e17.reshape(-1, probs_e17.shape[-1])  # ← actually exp029
+
+if USE_SED_PRE_AVG:
+    _eps = 1e-7
+    _l_sed = np.log(np.clip(flat_sed, _eps, 1 - _eps)) - np.log1p(-np.clip(flat_sed, _eps, 1 - _eps))
+    _l_e17 = np.log(np.clip(flat_e17, _eps, 1 - _eps)) - np.log1p(-np.clip(flat_e17, _eps, 1 - _eps))
+    _w_sed = BLEND_W_SED / (BLEND_W_SED + BLEND_W_E17)
+    _w_e17 = BLEND_W_E17 / (BLEND_W_SED + BLEND_W_E17)
+    _l_sed_avg = _w_sed * _l_sed + _w_e17 * _l_e17
+    flat_sed_combined = (1.0 / (1.0 + np.exp(-np.clip(_l_sed_avg, -50, 50)))).astype(np.float32)
+    rank_e10 = pd.DataFrame(flat_e10).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    rank_sed = pd.DataFrame(flat_sed_combined).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    _w_nb4 = BLEND_W_E10
+    _w_sed_total = BLEND_W_SED + BLEND_W_E17
+    blend_flat = _w_nb4 * rank_e10 + _w_sed_total * rank_sed
+    print(f"  SED-pre-avg mode: NB4={_w_nb4:.2f} / (Tucker+e29)={_w_sed_total:.2f} "
+          f"(Tucker:e29 internal = {_w_sed:.2f}:{_w_e17:.2f})")
+else:
+    rank_e10 = pd.DataFrame(flat_e10).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    rank_sed = pd.DataFrame(flat_sed).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    rank_e17 = pd.DataFrame(flat_e17).rank(axis=0, pct=True).to_numpy().astype(np.float32)
+    blend_flat = (BLEND_W_E10 * rank_e10
+                  + BLEND_W_SED * rank_sed
+                  + BLEND_W_E17 * rank_e17)
+    print(f"  3-way rank blend: NB4={BLEND_W_E10} / Tucker={BLEND_W_SED} / e29={BLEND_W_E17}")
+
+# === Sonotype mirror (公開 0.946 NB Cell 40) ===
+MIRROR_PAIRS = (
+    ("47158son15", "47158son16"),
+    ("47158son09", "47158son12"),
+    ("47158son02", "47158son14"),
+    ("47158son13", "47158son21", "47158son22", "47158son23"),
+)
+col_to_idx = {lbl: i for i, lbl in enumerate(PRIMARY_LABELS)}
+mirror_count = 0
+for group in MIRROR_PAIRS:
+    valid_idx = [col_to_idx[s] for s in group if s in col_to_idx]
+    if len(valid_idx) >= 2:
+        group_max = blend_flat[:, valid_idx].max(axis=1, keepdims=True)
+        blend_flat[:, valid_idx] = group_max
+        mirror_count += len(valid_idx)
+print(f"  Sonotype mirror applied to {mirror_count} columns")
+
+probs_blend = blend_flat.reshape(probs_exp010.shape)
+print(f"blend shape: {probs_blend.shape}, mean={probs_blend.mean():.4f}, max={probs_blend.max():.4f}")
+
+preds_array = probs_blend.reshape(-1, N_CLASSES)
+_n, _c = preds_array.shape
+_view = preds_array.reshape(-1, N_WINDOWS, _c)
+_sorted = np.sort(_view, axis=1)
+_topk_mean = _sorted[:, -FCS_TOP_K:, :].mean(axis=1, keepdims=True)
+_scale = np.power(_topk_mean, FCS_POWER)
+preds_array = (_view * _scale).reshape(_n, _c).astype(np.float32)
+
+submission = pd.DataFrame(preds_array, columns=PRIMARY_LABELS)
+submission.insert(0, "row_id", all_row_ids)
+
+sample_sub = pd.read_csv(BASE / "sample_submission.csv")
+expected_ids = set(sample_sub["row_id"])
+our_ids = set(submission["row_id"])
+missing = expected_ids - our_ids
+if missing:
+    print(f"WARNING: {len(missing)} missing row_ids - filling zeros")
+    missing_df = pd.DataFrame({"row_id": list(missing)})
+    for sp in PRIMARY_LABELS:
+        missing_df[sp] = 0.0
+    submission = pd.concat([submission, missing_df], ignore_index=True)
+extra = our_ids - expected_ids
+if extra:
+    submission = submission[submission["row_id"].isin(expected_ids)]
+submission = submission.set_index("row_id").loc[sample_sub["row_id"]].reset_index()
+submission.to_csv("submission.csv", index=False)
+
+total = time.time() - START
+print(f"\nSubmission: {submission.shape}, total {total:.0f}s ({total/60:.1f} min)")
+print(f"Mean pred: {submission[PRIMARY_LABELS].values.mean():.6f}")
+print(f"Max pred:  {submission[PRIMARY_LABELS].values.max():.6f}")
+print(submission.head())
+

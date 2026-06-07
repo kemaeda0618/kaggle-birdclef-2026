@@ -266,9 +266,6 @@ for ckpt_path in ckpt_files:
 
 print(f"\nOK loaded {len(fold_models)} fold models on {device}")
 print(f"  Total params: {sum(p.numel() for p in fold_models[0].parameters())/1e6:.1f}M per model")
-
-print(f"\nOK exported + loaded {len(ort_sessions)} ONNX sessions in {time.time()-t_export_start:.1f}s")
-print(f"  ONNX dir: {ONNX_DIR}, total size: {sum(f.stat().st_size for f in ONNX_DIR.glob('*.onnx'))/1e6:.1f} MB")
 """, "load_ckpts"))
 
 cells.append(code_cell(r"""# ============================================================

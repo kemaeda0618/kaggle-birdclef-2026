@@ -1,0 +1,3 @@
+## S0 — Environment Setup
+
+Install the required packages. The onnxruntime wheel is bundled in a Kaggle dataset to avoid network dependency at scoring time. `timm` provides the EfficientNet backbone with ImageNet pretrained weights.

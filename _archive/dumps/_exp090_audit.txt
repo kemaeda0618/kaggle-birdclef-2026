@@ -1,0 +1,267 @@
+=== Cell-by-cell diff (exp078 vs exp090) ===
+exp078 cells: 30, exp090 cells: 30
+
+Added cells (new in exp090): set()
+Removed cells: set()
+Differing cells: 3/30 = ['blend', 'exp037_full_pipeline', 'hdr']
+
+======================================================================
+DIFF in cell 'blend'
+  exp078: 4334 chars, exp090: 6993 chars (Δ=+2659)
+======================================================================
+--- exp078/blend
++++ exp090/blend
+@@ -81,6 +81,70 @@
+ if extra:
+     submission = submission[submission["row_id"].isin(expected_ids)]
+ submission = submission.set_index("row_id").loc[sample_sub["row_id"]].reset_index()
++# === ★ exp090: Taxonomy smoothing post-processing (from anthonytherrien 0.950 NB) ===
++# Genus-level smoothing (α=0.15) + Class-level smoothing (α=0.05)
++# Expected lift: +0.001-0.002 (independent post-process after blend)
++def f_tax_smoothing(submission, genus_alpha=0.15, class_alpha=0.05):
++    """Smooth predictions within taxonomic genera and classes."""
++    tax_paths = [
++        Path("/kaggle/input/competitions/birdclef-2026/taxonomy.csv"),
++        Path("/kaggle/input/birdclef-2026/taxonomy.csv"),
++    ]
++    taxonomy_df = None
++    for p in tax_paths:
++        if p.exists():
++            taxonomy_df = pd.read_csv(p)
++            break
++    if taxonomy_df is None:
++        print("[tax_smooth] taxonomy.csv not found — skip")
++        return submission
++
++    species_to_genus = {}
++    species_to_class = {}
++    for _, row in taxonomy_df.iterrows():
++        label = str(row["primary_label"])
++        sci = str(row.get("scientific_name", ""))
++        cls = str(row.get("class_name", ""))
++        genus = sci.split(" ")[0] if " " in sci else sci
++        species_to_genus[label] = genus
++        species_to_class[label] = cls
++
++    label_cols = [c for c in submission.columns if c != "row_id"]
++    genus_groups = {}
++    class_groups = {}
++    for col in label_cols:
++        g = species_to_genus.get(col, col)
++        c = species_to_class.get(col, "")
++        genus_groups.setdefault(g, []).append(col)
++        if c:
++            class_groups.setdefault(c, []).append(col)
++    multi_genus = {k: v for k, v in genus_groups.items() if len(v) > 1}
++    multi_class = {k: v for k, v in class_groups.items() if len(v) > 1}
++    print(f"[tax_smooth] pre: mean={submission[label_cols].values.mean():.6f}")
++    print(f"[tax_smooth] multi-genus groups: {len(multi_genus)}, multi-class: {len(multi_class)}")
++
++    probs = submission[label_cols].values.astype(np.float32).copy()
++    col_to_idx = {c: i for i, c in enumerate(label_cols)}
++
++    # Genus smoothing
++    for _, members in multi_genus.items():
++        idx = [col_to_idx[m] for m in members]
++        g_mean = probs[:, idx].mean(axis=1, keepdims=True)
++        probs[:, idx] = (1 - genus_alpha) * probs[:, idx] + genus_alpha * g_mean
++
++    # Class smoothing
++    for _, members in multi_class.items():
++        idx = [col_to_idx[m] for m in members]
++        c_mean = probs[:, idx].mean(axis=1, keepdims=True)
++        probs[:, idx] = (1 - class_alpha) * probs[:, idx] + class_alpha * c_mean
++
++    submission[label_cols] = probs
++    print(f"[tax_smooth] post: mean={submission[label_cols].values.mean():.6f}")
++    return submission
++
++# Apply tax smoothing
++submission = f_tax_smoothing(submission, genus_alpha=0.15, class_alpha=0.05)
++
+ submission.to_csv("submission.csv", index=False)
+ 
+ total = time.time() - START
+
+======================================================================
+DIFF in cell 'exp037_full_pipeline'
+  exp078: 6650 chars, exp090: 6663 chars (Δ=+13)
+======================================================================
+--- exp078/exp037_full_pipeline
++++ exp090/exp037_full_pipeline
+@@ -43,7 +43,7 @@
+     sites=meta_te["site"].to_numpy(),
+     hours=meta_te["hour_utc"].to_numpy(),
+     tables=prior_tables,
+-    lambda_prior=0.4,
++    lambda_prior=0.65,
+ )
+ 
+ # ── Step D: MLP probes ─────────────────────────────────────────────────
+@@ -95,7 +95,7 @@
+     sites=meta_tr["site"].to_numpy(),
+     hours=meta_tr["hour_utc"].to_numpy(),
+     tables=prior_tables,
+-    lambda_prior=0.4,
++    lambda_prior=0.65,
+ )
+ sc_tr_mlp = apply_mlp_probes_vectorized(
+     emb_tr, sc_tr_prior,
+@@ -157,7 +157,7 @@
+ # ── Step I: Post-processing pipeline ──────────────────────────────────
+ probs = file_confidence_scale(probs, n_windows=N_WINDOWS,
+                                top_k=2,       power=0.4)
+-probs = rank_aware_scaling(   probs, n_windows=N_WINDOWS,
++probs = rank_aware_scaling(   probs, n_windows=N_WINDOWS, power=0.6,
+                                power=0.4)
+ probs = adaptive_delta_smooth(probs, n_windows=N_WINDOWS,
+                                base_alpha=0.20)
+
+======================================================================
+DIFF in cell 'hdr'
+  exp078: 859 chars, exp090: 1737 chars (Δ=+878)
+======================================================================
+--- exp078/hdr
++++ exp090/hdr
+@@ -1,20 +1,46 @@
+-# exp039 — exp037 + Tucker SED + exp029 single-NB blend (NB4 replaced)
++# exp090 — exp078 (LB 0.950) + lambda_prior 0.65 + rank_aware power 0.6 + TAX_SMOOTHING
+ 
+-NB4 を **exp037 (LightProtoSSM + MLP probes + ResSSM in-NB train)** に置換した 3-way rank blend.
+-全推論 1 NB で完結 (no kernel_source for exp037 output).
++★ **exp078 (LB 0.950) を base に、anthonytherrien 0.950 NB で実証された 3 改善を適用**
+ 
+-## Architecture
+-| Slot | Model | Weight |
++## 変更点 (vs exp078)
++
++| 項目 | exp078 (現 best) | exp090 (改善版) | 出典 |
++|---|---|---|---|
++| `lambda_prior` (Hour/Site prior) | 0.4 (default) | **0.65** ★ | anthony Model_51 |
++| `rank_aware_scaling(power)` | 0.4 (default) | **0.6** ★ | anthony Model_51 |
++| `file_confidence_scale(power)` | 0.4 | **0.4 維持** | memory 警告 (overcalibration risk) |
++| **TAX_SMOOTHING** (genus+class smoothing) | なし | **追加 (α=0.15/0.05)** ★ | anthony Cell 24 |
++
++## Stack (exp078 と同)
++
++| # | Model | Weight |
+ |---|---|---|
+-| 1 | **exp037 (LightProtoSSM + MLP probes + ResSSM)** | **0.35** |
+-| 2 | Tucker SED (5-fold ONNX) | 0.40 |
+-| 3 | exp029 R3 (NFNet l1 single fold) | 0.25 |
++| 1 | exp037 v313 (LightProtoSSM + MLP + ResSSM) ★ hyperparameter tuned | 0.35 |
++| 2 | Tucker SED 5-fold ONNX | 0.40 |
++| 3 | exp029 R3 (eca_nfnet_l1) | 0.25 |
+ 
+ ## Expected
+-- LB **0.951-0.954** (exp031 0.949 baseline + standalone +0.012 → blend +0.002-0.005)
+-- Run time **55-65 min** on Kaggle CPU (exp037 30 min + Tucker 15-20 + exp029 8-12 + audio reload 5-8)
++- LB **0.950-0.953** (exp078 から +0.000-0.003)
++- 改善確率: **70%**
++- gold (0.954) 確率: **10-15%**
++- drag 確率: **15%**
+ 
+-## NB4 → exp037 swap rationale
+-- exp037 v313 standalone LB **0.930** vs NB4 standalone ~0.918-0.924 = +0.006-0.012
+-- Removed deps: anura/inat pool、exp010-nb1-embedding kernel_source
+-- Kept deps: Perch ONNX、Tucker SED、exp029 ckpt
++## 根拠
++- anthony Model_22 (lambda 0.4) LB 0.928 → Model_51 (lambda 0.65 + rank 0.6) LB 0.949 = +0.021 standalone
++- 我々 exp037 v313 が同 paradigm (mtoshidesu yaroslav v221 系)、同じ tuning で similar lift 期待
++- TAX_SMOOTHING は anthony 0.950 NB の必須 component (Cell 24)
++- 3-way blend 内 weight 0.35 で dilute → 期待 +0.001-0.003
++
++## Risk
++- exp037 内部 PP が default value で local optimum の可能性 (~20%)
++- TAX_SMOOTHING の α (0.15/0.05) が我々の predictions に最適でない可能性 (~15%)
++- FCS は memory 警告のため変更せず
++
++## Inputs (exp078 と完全同一)
++- `birdclef-2026` (competition)
++- `jaejohn/perch-meta`
++- `rishikeshjani/perch-onnx-for-birdclef-2026`
++- `tuckerarrants/bc2026-distilled-sed-public`
++- `maekeso/birdclef2026-exp029-l1-single`
++- kernel_sources: `ashok205/tf-wheels`
++- model_sources: `google/bird-vocalization-classifier/.../perch_v2_cpu/1`
+
+
+======================================================================
+=== CRITICAL CONTEXT CHECK: changed calls in exp090 ===
+======================================================================
+
+--- apply_prior call at L40 ---
+       L 37: 
+       L 38: # ── Step C: Prior tables ───────────────────────────────────────────────
+       L 39: prior_tables   = build_prior_tables(sc, Y_SC)
+       L 40: sc_te_adjusted = apply_prior(
+       L 41:     sc_te,
+       L 42:     sites=meta_te["site"].to_numpy(),
+       L 43:     hours=meta_te["hour_utc"].to_numpy(),
+       L 44:     tables=prior_tables,
+   >>> L 45:     lambda_prior=0.65,
+       L 46: )
+       L 47: 
+
+--- apply_prior call at L92 ---
+       L 89: proto_tr_flat = proto_tr_out.reshape(-1, N_CLASSES).astype(np.float32)
+       L 90: 
+       L 91: # Get MLP scores on training data
+       L 92: sc_tr_prior   = apply_prior(
+       L 93:     sc_tr,
+       L 94:     sites=meta_tr["site"].to_numpy(),
+       L 95:     hours=meta_tr["hour_utc"].to_numpy(),
+       L 96:     tables=prior_tables,
+   >>> L 97:     lambda_prior=0.65,
+       L 98: )
+       L 99: sc_tr_mlp = apply_mlp_probes_vectorized(
+
+--- rank_aware_scaling call at L159 ---
+       L157: probs = file_confidence_scale(probs, n_windows=N_WINDOWS,
+       L158:                                top_k=2,       power=0.4)
+   >>> L159: probs = rank_aware_scaling(   probs, n_windows=N_WINDOWS, power=0.6,
+       L160:                                power=0.4)
+       L161: probs = adaptive_delta_smooth(probs, n_windows=N_WINDOWS,
+       L162:                                base_alpha=0.20)
+       L163: probs = np.clip(probs, 0.0, 1.0)
+       L164: 
+
+--- file_confidence_scale call at L157 (should be UNCHANGED) ---
+      L155: 
+      L156: # ── Step I: Post-processing pipeline ──────────────────────────────────
+      L157: probs = file_confidence_scale(probs, n_windows=N_WINDOWS,
+      L158:                                top_k=2,       power=0.4)
+      L159: probs = rank_aware_scaling(   probs, n_windows=N_WINDOWS, power=0.6,
+      L160:                                power=0.4)
+      L161: probs = adaptive_delta_smooth(probs, n_windows=N_WINDOWS,
+      L162:                                base_alpha=0.20)
+
+
+======================================================================
+=== TAX_SMOOTHING placement check (blend cell) ===
+======================================================================
+  L  0: # === Stage C: 3-way rank blend (NB4 + Tucker + exp029) + Sonotype mirror + submission ===
+  L 38: # === Sonotype mirror (公開 0.946 NB Cell 40) ===
+  L 53: print(f"  Sonotype mirror applied to {mirror_count} columns")
+  L 86: def f_tax_smoothing(submission, genus_alpha=0.15, class_alpha=0.05):
+  L145: submission = f_tax_smoothing(submission, genus_alpha=0.15, class_alpha=0.05)
+  L147: submission.to_csv("submission.csv", index=False)
+
+
+======================================================================
+=== Verify no lambda_prior=0.4 CALL sites remain ===
+======================================================================
+  Summary: 0 call sites with 0.4, 0 def with 0.4
+
+======================================================================
+=== Syntax check ===
+======================================================================
+Result: 29 OK, 0 ERRORS
+
+======================================================================
+=== AUDIT SUMMARY ===
+======================================================================
+  Diff cells: {'hdr', 'exp037_full_pipeline', 'blend'} (expected: {'hdr', 'exp037_full_pipeline', 'blend'})
+  Unexpected added cells: set()
+  Unexpected removed cells: set()
+  Syntax: 29 OK
